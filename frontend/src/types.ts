@@ -38,7 +38,12 @@ export interface Proposal {
   details: { score_breakdown: Candidate['score'][]; explanations: Explanation[];
     rejected: Record<string, Rejection[]>; candidates: Record<string, Candidate[]>; message: string };
 }
+export interface AuditChange {
+  session_id: number; session_code: string; session_title: string;
+  from_room: string; to_room: string;
+}
 export interface AuditEvent {
   id: number; occurred_at: string; action: string; actor_id: number | null;
-  incident_id: number | null; proposal_id: number | null; details: unknown;
+  actor_display: string; incident_id: number | null; proposal_id: number | null;
+  changes: AuditChange[]; details: unknown;
 }

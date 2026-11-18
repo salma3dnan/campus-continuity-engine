@@ -55,6 +55,12 @@ function timeAtCampus(iso: string) { return facilityTime.format(new Date(iso)); 
 function formatWindow(start: string, end: string) {
   return dayAtCampus(start) + ' · ' + timeAtCampus(start) + '–' + timeAtCampus(end);
 }
+function planRankLabel(plan: Proposal, index: number, options: Proposal[]) {
+  const better = options.filter(other => other.score > plan.score).length;
+  const same = options.filter(other => other.score === plan.score).length;
+  if (same > 1) return "TIED · RANK " + (better + 1);
+  return better === 0 ? "HIGHEST SCORED OPTION" : "OPTION " + (index + 1);
+}
 function labelForAudit(action: string) {
   if (action === 'recovery_approved') return 'Recovery approved';
   if (action === 'recovery_generated') return 'Recovery options generated';
@@ -72,6 +78,8 @@ export default function App() {
   const [sessions, setSessions] = useState<ClassSession[]>([]);
   const [incidents, setIncidents] = useState<Incident[]>([]);
   const [audit, setAudit] = useState<AuditEvent[]>([]);
+  const [activityFilter, setActivityFilter] = useState<'all' | 'approved'>('all');
+  const [showAllActivity, setShowAllActivity] = useState(false);
   const [day, setDay] = useState('2027-02-09');
   const [buildingFilter, setBuildingFilter] = useState<string>('initial');
   const [roomFilter, setRoomFilter] = useState('');
@@ -154,6 +162,8 @@ export default function App() {
   ), [rooms, buildingFilter, roomFilter]);
   const dateSessions = useMemo(() => sessions.filter(session => localDay(session.start_at) === day),
     [sessions, day]);
+  const filteredAudit = audit.filter(event => activityFilter === 'all' || event.action === 'recovery_approved');
+  const visibleAudit = showAllActivity ? filteredAudit : filteredAudit.slice(0, 10);
   const hiddenTestIncidents = incidents.filter(item => automatedTest(item.title));
   const operationalIncidents = incidents.filter(item => !automatedTest(item.title));
   const selectedIncident = incidents.find(item => item.id === selectedId);
@@ -421,10 +431,10 @@ export default function App() {
             : plans.length ? <div className="plan-list">
             {plans.map((plan, index) => <article key={plan.id} className={'plan-surface ' + (index === 0 ? 'preferred' : '')}>
               <div className="plan-top">
-                <div><small className="eyebrow">{index === 0 ? 'HIGHEST RANKED OPTION' : 'ALTERNATIVE ' + (index + 1)}</small>
+                <div><small className="eyebrow">{planRankLabel(plan, index, plans)}</small>
                   <h3>Plan #{plan.id}</h3></div>
                 <div className="plan-top-right"><span className={'status-chip ' + (plan.status === 'approved' ? 'green' : '')}>{plan.status}</span>
-                  <span className="plan-score">{plan.score} <small>preference points</small></span></div>
+                  <span className="plan-score">{plan.score} <small>preference points · higher is preferred, not a percentage</small></span></div>
               </div>
               <div className="change-table">
                 <div className="change-header"><span>CLASS</span><span>BEFORE</span><span>AFTER</span></div>
@@ -438,7 +448,8 @@ export default function App() {
                 <details><summary>Why these rooms? View scores and rejections</summary>
                   {plan.details.explanations.map(change => <div className="explanation" key={change.session_id}>
                     <strong>{change.code}: {change.new_room} · {change.score.total} points</strong>
-                    <p>Same building: {change.score.same_building} · Capacity fit: {change.score.unused_capacity} · Resource fit: {change.score.excess_equipment}</p>
+                    <p className="score-story">Base score: 100 · Same-building bonus: +{change.score.same_building} · Unused-seat penalty: {Math.abs(change.score.unused_capacity)} · Excess-equipment penalty: {Math.abs(change.score.excess_equipment)}.</p>
+                    <p className="score-help">All mandatory requirements already passed. These points only rank valid rooms; they do not predict a success rate.</p>
                     {(plan.details.rejected[String(change.session_id)] ?? []).map(r => <p key={r.room_id}>
                       <b>{r.room}</b>: {r.reasons.join('; ')}</p>)}
                   </div>)}</details>
@@ -447,7 +458,11 @@ export default function App() {
                     plan.status === 'pending' ? 'Approve this plan' : 'Plan ' + plan.status}</button>
               </div>
             </article>)}
-          </div> : <div className="content-surface empty-results"><p>{impacts.length ? 'No plans stored. Use “Find available rooms” to check the current options.' : 'Choose an active disruption to inspect its impact.'}</p></div>}
+          </div> : <div className="content-surface empty-results"><p>{planMessage
+            ? 'Search complete: no valid full reassignment is available. Review the rejection reasons below; no partial plan can be approved.'
+            : impacts.length
+              ? (isAdmin ? 'No current plans yet. Select “Find available rooms” to evaluate alternatives.' : 'No saved proposals yet. An administrator can evaluate available rooms.')
+              : 'No outstanding classes require reassignment for this incident.'}</p></div>}
           {!plans.length && planMessage && impacts.length > 0 && <div className="content-surface">
             <div className="section-title"><h2>Why alternatives were rejected</h2></div>
             {impacts.map(item => <div className="rejection-group" key={item.session_id}>
@@ -475,14 +490,42 @@ export default function App() {
             <p>Record of disruptions, recovery decisions and schedule approvals.</p></div></div>
           <div className="content-surface activity-list">
             <div className="section-title"><h2>Recent actions</h2><span className="small-count">{audit.length} records</span></div>
-            {audit.map(event => <div className="activity-item" key={event.id}>
+            <div className="audit-toolbar" role="group" aria-label="Filter activity">
+              <button type="button" aria-pressed={activityFilter === 'all'}
+                onClick={() => { setActivityFilter('all'); setShowAllActivity(false); }}>All actions</button>
+              <button type="button" aria-pressed={activityFilter === 'approved'}
+                onClick={() => { setActivityFilter('approved'); setShowAllActivity(false); }}>Approvals only</button>
+              <span>{filteredAudit.length} matching records</span>
+            </div>
+            {visibleAudit.map(event => <div className="activity-item" key={event.id}>
               <div className="activity-dot"/>
-              <div><strong>{labelForAudit(event.action)}</strong><p>{formatWindow(event.occurred_at, event.occurred_at)}
-                {event.incident_id ? ' · Incident #' + event.incident_id : ''}
-                {event.proposal_id ? ' · Plan #' + event.proposal_id : ''}</p>
-                <details><summary>View stored details</summary><pre>{JSON.stringify(event.details, null, 2)}</pre></details></div>
+              <div className="activity-body">
+                <strong>{labelForAudit(event.action)}</strong>
+                <p>{dayAtCampus(event.occurred_at)} · {timeAtCampus(event.occurred_at)} MYT
+                  {' · By '}{event.actor_display || 'System'}
+                  {event.incident_id ? ' · Incident #' + event.incident_id : ''}
+                  {event.proposal_id ? ' · Plan #' + event.proposal_id : ''}</p>
+                {event.changes?.length > 0 && <div className="audit-change-list">
+                  {event.changes.map(change => <div className="audit-change" key={change.session_id}>
+                    <div><b>{change.session_title}</b><small>{change.session_code}</small></div>
+                    <span className="audit-room">{change.from_room}</span>
+                    <span className="audit-arrow" aria-label="moved to">→</span>
+                    <span className="audit-room destination">{change.to_room}</span>
+                  </div>)}
+                  <small>Only the room changed. The class time remained the same.</small>
+                </div>}
+                {event.action === 'recovery_generated' && !event.changes?.length &&
+                  <p className="audit-description">A room-recovery search was recorded; proposals require separate approval.</p>}
+                <details><summary>Technical details (original audit record)</summary>
+                  <pre>{JSON.stringify(event.details, null, 2)}</pre>
+                </details>
+              </div>
             </div>)}
-            {!audit.length && <div className="empty-panel">No recorded activity yet.</div>}
+            {filteredAudit.length > 10 && !showAllActivity &&
+              <button className="audit-more" onClick={() => setShowAllActivity(true)}>
+                Show all {filteredAudit.length} matching records ↓
+              </button>}
+            {filteredAudit.length === 0 && <div className="empty-panel">No activity matches this filter.</div>}
           </div>
         </section>}
         <footer className="site-footer"><span>Campus Continuity · University scheduling demonstration</span>

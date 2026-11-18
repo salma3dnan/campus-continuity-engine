@@ -63,6 +63,18 @@ For required equipment types only, **excess_required_equipment_units** is the su
 
 The overall plan score is the **sum** of its individual assignment scores; the UI displays the score breakdown. These are explanatory preferences, not empirical monetary or environmental savings.
 
+## Idempotent proposal lifecycle
+
+A user may press **Find available rooms** repeatedly. The API locks the disruption row before generating solutions and compares the freshly calculated assignment keys (session ID, original room ID and new room ID) against existing pending proposals.
+
+- Identical feasible proposals are **reused**, not inserted again.
+- Pending alternatives that no longer match current feasible results are marked **superseded** (not deleted).
+- Legacy duplicate records remain available historically, while the current GET endpoint displays at most three distinct pending solutions.
+- When a choice has become infeasible, approval still rechecks constraints under locks; a previously stored score is never authorization to write.
+- A new audit generation event is written when the available set or its explanation actually changes, not merely because the same search button was pressed again.
+
+The result cards explicitly label ties and explain each scoring bonus and penalty. Preference points are not probabilities or success rates.
+
 ## Safe approval
 
 A pending proposal is not guaranteed to remain valid. Before updating the schedule:

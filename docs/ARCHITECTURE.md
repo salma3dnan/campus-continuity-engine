@@ -41,6 +41,12 @@ flowchart LR
 - Administrators use the locally seeded `.env` account to create incidents, generate plans and approve schedule changes. Every write is guarded by the server-side role dependency.
 - The initial PostgreSQL `users` table already supported account roles, so onboarding required **no database reset or migration**.
 
+## Readable audit projections and privacy
+
+Audit records preserve original numeric IDs in PostgreSQL. The GET API builds a read-only enriched view with the current class title/code and room names for approval changes. An authenticated administrator can see the actor's actual username, while a guest or staff viewer gets the actor's role label so administrator login identities are not disclosed through public reads. The original JSON remains accessible in a collapsed technical section.
+
+The Activity page displays time once per event and filters to **Approvals only** or **All actions**; it initially shows ten recent matching records. This limits noise from older synthetic test history without deleting records.
+
 ## Execution steps
 
 1. An administrator reports a disruption with start/end timestamps and targeted room or building.

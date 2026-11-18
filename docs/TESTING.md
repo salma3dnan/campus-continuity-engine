@@ -1,10 +1,22 @@
 # Test Execution and Verification Report
 
-**Date:** 18 November 2026 (Asia/Kuala_Lumpur)
+**Date:** 19 November 2026 (Asia/Kuala_Lumpur)
 **Environment:** Windows 11 workstation, Python 3.14.7 in project-local virtual environment, Node.js 24.22, PostgreSQL 18.6 in project-private cluster, Chrome via Playwright.
 **Status:** Updated schedule-first UI and staff onboarding verified locally on 19 November 2026; Docker Compose packaging remains unverified on this workstation.
 
-## Latest verified revision — 19 November 2026
+## Portfolio-quality regression — 19 November 2026
+
+- **36/36 PostgreSQL-backed Python tests passed**, with one existing FastAPI/Starlette `httpx` deprecation warning. Added six coverage scenarios: repeated search idempotence, concurrent generation under row locks, legacy duplicate retention/deduplication, obsolete proposal invalidation, impossible recovery handling, and privacy-aware human-readable audit details.
+- **5/5 React component tests passed** (no changes to their fixtures required).
+- **2/2 new targeted Google Chrome tests passed** in one run. These verified that the existing **B · Building A network outage** shows only distinct current proposals (max 3), score ties and understandable penalties; and that Activity shows the original class, old/new room codes, a real timestamp, public actor masking and an approvals-only filter.
+- **Production TypeScript/Vite build passed** (31 transformed modules). The isolated demo PostgreSQL database was **not truncated or reset**.
+- **Live local services restarted successfully** using the persisted launcher. Frontend returned HTTP 200, API health returned `{"status":"ok","database":"connected"}`, and PostgreSQL remained on port 5440.
+- **Real Chrome screenshots:** `docs/screenshots/portfolio-ranked-options.png` and `docs/screenshots/portfolio-audit-history.png`. Captured as a guest to avoid exposing administrator email identifiers.
+- Only the new read-only Playwright scenarios were rerun for this polish. The prior **six-case full browser suite** and its real approval result remain valid historical evidence but were **not** rerun during this revision, to avoid adding more demo incidents or altering existing approvals.
+
+Tests and HTTP checks are reproducible with the commands below. This is a portfolio demo, not a production penetration test or scalability certification.
+
+## Previous verified UI revision — 19 November 2026
 
 - **Backend / PostgreSQL:** 30/30 passed, including 8 registration/role-boundary tests in real isolated PostgreSQL.
 - **React / Vitest:** 5/5 passed, covering separated login/registration, guest calendar, read-only staff, invalid login and password confirmation.
@@ -34,7 +46,7 @@ Command:
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-backend.ps1
 ~~~
 
-**Original MVP baseline: 22 passed, 0 failed, 1 deprecation warning (9.16 s).** The updated backend suite now reports **30 passed**.
+**Original MVP baseline: 22 passed, 0 failed, 1 deprecation warning (9.16 s).** The previous UI revision reported **30 passed**; the newer portfolio-quality suite reports **36 passed**.
 
 The warning is from the installed FastAPI/Starlette test client indicating upcoming httpx API changes. It does not represent a failed test. Tests use the isolated **continuity_test** database; an explicit guard prevents truncating another database.
 

@@ -6,6 +6,14 @@ A room closure, internet outage or equipment failure can disrupt several campus 
 
 This is a **local synthetic-data portfolio project**, not deployed university software. It does not use machine learning or generative AI.
 
+![Campus room-by-time timetable](docs/screenshots/redesign-timetable.png)
+
+**[Read the engineering case study](docs/PORTFOLIO_CASE_STUDY.md)** · [Ranked recovery alternatives](docs/screenshots/portfolio-ranked-options.png) · [Readable approval history](docs/screenshots/portfolio-audit-history.png)
+
+## What makes this different
+
+The value is not a dashboard of metrics: it is an explainable, **multi-session recovery workflow** with database-enforced no-double-booking guarantees. Repeated searches reuse current proposals instead of inserting identical alternatives; old records remain available for audit. Tied rankings are explicitly shown as ties, and approval history uses actual class/room names rather than unexplained numeric IDs.
+
 ## Workflow
 
 Report incident → identify affected classes → evaluate room constraints → solve all impacted sessions together → explain feasibility and scoring → approve → update schedule atomically → audit every decision.
@@ -21,6 +29,8 @@ Report incident → identify affected classes → evaluate room constraints → 
 - Separate sign-in and staff self-registration. Staff accounts are intentionally read-only; only locally provisioned administrators can submit or approve recovery actions.
 - Argon2 password hashes, expiring signed JWT and server-enforced role restrictions.
 - Atomic approvals with stale proposal checks, ordered row locks, PostgreSQL exclusion constraint and audit trail.
+- Deduplicated current proposals with idempotent, serialized generation; no deletion of historical plan records.
+- Honest ranking labels for equal preference scores, clear hard-constraint explanations and readable approval history with guest-safe actor labels.
 - Schedule-first React workspace with a **room-by-time calendar**, date/building filters, class details, Disruptions, Recovery Plans, Rooms & Resources and Activity. Includes a dedicated auth portal and no-login read-only exploration.
 - Browser-test-generated incidents are preserved in audit history but moved out of the primary case queue.
 - Database-backed API responses; no hardcoded incident/plan results in the UI.
@@ -118,6 +128,7 @@ The original screen layout and interaction flow are **informed by real schedulin
 - [Demo scenarios](docs/DEMO.md)
 - [Test execution evidence](docs/TESTING.md)
 - [Portfolio CV description](docs/CV.md)
+- [Product and engineering case study](docs/PORTFOLIO_CASE_STUDY.md)
 
 ## Scope and limitations
 

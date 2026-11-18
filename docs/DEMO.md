@@ -14,6 +14,14 @@ From the project root:
 
 See README.md for exact PowerShell commands and Python/npm installation prerequisites.
 
+## Product-quality checks (2026-11-19)
+
+- Open **Recovery plans** for **B · Building A network outage**. The current API shows up to **three different** room-assignment plans, even if earlier browser runs left duplicate pending records.
+- If the top two plans have the same score, both are marked **TIED · RANK 1**. Open **Why these rooms?** to see the 100-point base, same-building bonus, unused-seat penalty and excess-equipment penalty.
+- Pressing **Find available rooms** again with unchanged conditions reuses the same proposal IDs, rather than filling the queue with identical plans. Test this on `continuity_test` if you do not want to modify live demo proposal statuses.
+- Open **Activity**. An approval displays a single timestamp and a readable before/after class-room change. Try the **Approvals only** filter. Guest view masks the administrator's username.
+- For **D · No alternative large enough**, a completed unsuccessful search explicitly states **no valid full reassignment**, with rejection details; it must not present an approval button.
+
 ## Scenario A — successful closure recovery
 
 Baseline case: **A · Internet lab room closure**, 9 February 2027, Academic Block room A-LAB1. The **A-OS** laboratory session requires computers and network connectivity. The impact engine reports this class; it does **not** treat nearby unrelated rooms as affected.

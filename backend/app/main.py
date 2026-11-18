@@ -13,7 +13,7 @@ from .models import (
     User, Building, Room, RoomEquipment, Session, SessionRequirement,
     Disruption, Proposal, ProposedAssignment, AuditEvent
 )
-from .security import hasher, create_token, require_admin, require_user
+from .security import hasher, create_token, require_admin, require_user, optional_user
 from .engine import get_impacts, find_plans, SolverLimit
 from .approval import approve
 
@@ -160,6 +160,19 @@ def impacts(incident_id: int, db: DbSession = Depends(get_db)):
         raise HTTPException(404, "Incident not found")
     return get_impacts(db, incident)
 
+def assignment_key(items):
+    return tuple((a.session_id, a.original_room_id, a.new_room_id)
+                 for a in sorted(items, key=lambda a: a.session_id))
+
+def stored_assignment_key(db, proposal_id):
+    return assignment_key(list(db.scalars(select(ProposedAssignment).where(
+        ProposedAssignment.proposal_id == proposal_id
+    ).order_by(ProposedAssignment.session_id))))
+
+def computed_assignment_key(plan):
+    return tuple((a["session_id"], a["old_room_id"], a["new_room_id"])
+                 for a in sorted(plan["assignments"], key=lambda a: a["session_id"]))
+
 def serialize_proposal(db, proposal):
     items = list(db.scalars(select(ProposedAssignment).where(
         ProposedAssignment.proposal_id == proposal.id).order_by(ProposedAssignment.session_id)))
@@ -174,16 +187,32 @@ def serialize_proposal(db, proposal):
 def recovery_plans(incident_id: int, db: DbSession = Depends(get_db)):
     if not db.get(Disruption, incident_id):
         raise HTTPException(404, "Incident not found")
-    proposals = list(db.scalars(select(Proposal).where(
-        Proposal.disruption_id == incident_id).order_by(Proposal.score.desc(), Proposal.id.asc()).limit(30)))
-    return [serialize_proposal(db, p) for p in proposals]
+    # Old runs may have stored identical plans repeatedly. Show at most three
+    # distinct current choices without deleting historical proposal records.
+    records = list(db.scalars(select(Proposal).where(
+        Proposal.disruption_id == incident_id,
+        Proposal.status.in_(["pending", "approved"])
+    ).order_by(Proposal.id.desc()).limit(500)))
+    pending = [p for p in records if p.status == "pending"]
+    visible = pending if pending else [p for p in records if p.status == "approved"]
+    unique = {}
+    for p in visible:
+        signature = stored_assignment_key(db, p.id)
+        if signature not in unique:
+            unique[signature] = p
+    ranked = sorted(unique.values(), key=lambda p: (-p.score, p.id))[:3]
+    return [serialize_proposal(db, p) for p in ranked]
 
 @app.post("/api/disruptions/{incident_id}/recovery-plans")
 def generate_recovery(
     incident_id: int, admin: User = Depends(require_admin),
     db: DbSession = Depends(get_db)
 ):
-    incident = db.get(Disruption, incident_id)
+    # Generation and approval lock the same incident first. This avoids
+    # duplicate inserts from simultaneous "Find available rooms" requests.
+    incident = db.scalar(select(Disruption).where(
+        Disruption.id == incident_id
+    ).with_for_update())
     if not incident:
         raise HTTPException(404, "Incident not found")
     if incident.status != "active":
@@ -192,40 +221,94 @@ def generate_recovery(
         results = find_plans(db, incident)
     except SolverLimit as e:
         raise HTTPException(422, str(e))
-    created = []
+
+    existing = list(db.scalars(select(Proposal).where(
+        Proposal.disruption_id == incident_id,
+        Proposal.status == "pending"
+    ).order_by(Proposal.id.desc())))
+    by_signature = {}
+    for prior in existing:
+        signature = stored_assignment_key(db, prior.id)
+        by_signature.setdefault(signature, prior)
+
+    current, retained_ids = [], set()
+    changed, new_count = False, 0
     for plan in results["plans"]:
         details = {"score_breakdown": [a["score"] for a in plan["assignments"]],
                    "explanations": plan["assignments"],
                    "rejected": results["rejected"], "candidates": results["candidates"],
                    "message": results["message"]}
-        proposal = Proposal(disruption_id=incident_id, status="pending", score=plan["score"],
-                            details=json.dumps(details, sort_keys=True),
-                            generated_at=datetime.now(timezone.utc))
-        db.add(proposal)
-        db.flush()
-        for a in plan["assignments"]:
-            db.add(ProposedAssignment(proposal_id=proposal.id, session_id=a["session_id"],
-                                      original_room_id=a["old_room_id"],
-                                      new_room_id=a["new_room_id"]))
-        created.append(proposal)
-    db.add(AuditEvent(occurred_at=datetime.now(timezone.utc), actor_id=admin.id,
-                      action="recovery_generated", incident_id=incident_id,
-                      details=json.dumps({"count": len(created), "message": results["message"]})))
+        details_json = json.dumps(details, sort_keys=True)
+        signature = computed_assignment_key(plan)
+        reusable = by_signature.get(signature)
+        if reusable is not None and reusable.score == plan["score"]:
+            if reusable.details != details_json:
+                reusable.details = details_json
+                changed = True
+            proposal = reusable
+        else:
+            proposal = Proposal(disruption_id=incident_id, status="pending", score=plan["score"],
+                                details=details_json, generated_at=datetime.now(timezone.utc))
+            db.add(proposal)
+            db.flush()
+            for a in plan["assignments"]:
+                db.add(ProposedAssignment(proposal_id=proposal.id, session_id=a["session_id"],
+                                          original_room_id=a["old_room_id"],
+                                          new_room_id=a["new_room_id"]))
+            changed, new_count = True, new_count + 1
+        retained_ids.add(proposal.id)
+        current.append(proposal)
+
+    # Preserve older rows for audit/debugging; only retire superseded pending
+    # alternatives. An unchanged repeat search is a read, not another insert.
+    for prior in existing:
+        if prior.id not in retained_ids:
+            prior.status = "superseded"
+            changed = True
+    if changed:
+        db.add(AuditEvent(occurred_at=datetime.now(timezone.utc), actor_id=admin.id,
+                          action="recovery_generated", incident_id=incident_id,
+                          details=json.dumps({"count": len(current), "new": new_count,
+                                              "message": results["message"]})))
     db.commit()
     return {"impacts": results["impacts"], "candidates": results["candidates"],
             "rejected": results["rejected"], "message": results["message"],
-            "plans": [serialize_proposal(db, p) for p in created]}
+            "plans": [serialize_proposal(db, p) for p in current]}
 
 @app.post("/api/recovery-plans/{proposal_id}/approve")
 def approve_recovery(proposal_id: int, admin: User = Depends(require_admin)):
     return approve(proposal_id, admin.id)
 
 @app.get("/api/audit-events")
-def audit_events(db: DbSession = Depends(get_db), limit: int = Query(default=50, ge=1, le=200)):
-    return [{"id": e.id, "occurred_at": iso(e.occurred_at), "action": e.action,
-             "actor_id": e.actor_id, "incident_id": e.incident_id,
-             "proposal_id": e.proposal_id, "details": json.loads(e.details)}
-            for e in db.scalars(select(AuditEvent).order_by(AuditEvent.id.desc()).limit(limit))]
+def audit_events(db: DbSession = Depends(get_db),
+                 limit: int = Query(default=50, ge=1, le=200),
+                 viewer: User | None = Depends(optional_user)):
+    actors = {u.id: u for u in db.scalars(select(User))}
+    room_names = {r.id: r.code for r in db.scalars(select(Room))}
+    session_names = {s.id: (s.code, s.title) for s in db.scalars(select(Session))}
+    result = []
+    for event in db.scalars(select(AuditEvent).order_by(AuditEvent.id.desc()).limit(limit)):
+        actor = actors.get(event.actor_id)
+        # Guests/staff can see the audit trail, but not administrator login emails.
+        actor_display = (actor.username if viewer is not None and viewer.role == "admin"
+                         else ("Administrator" if actor and actor.role == "admin"
+                               else "Staff" if actor else "System"))
+        details = json.loads(event.details)
+        changes = []
+        if event.action == "recovery_approved" and isinstance(details, list):
+            for entry in details:
+                code, title = session_names.get(entry.get("session_id"), ("Unknown class", "Unknown class"))
+                changes.append({
+                    "session_id": entry.get("session_id"), "session_code": code,
+                    "session_title": title, "from_room": room_names.get(entry.get("from_room"), "Unknown"),
+                    "to_room": room_names.get(entry.get("to_room"), "Unknown")
+                })
+        result.append({"id": event.id, "occurred_at": iso(event.occurred_at),
+                       "action": event.action, "actor_id": event.actor_id,
+                       "actor_display": actor_display, "incident_id": event.incident_id,
+                       "proposal_id": event.proposal_id, "changes": changes,
+                       "details": details})
+    return result
 
 @app.get("/api/overview")
 def overview(db: DbSession = Depends(get_db)):

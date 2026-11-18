@@ -35,6 +35,14 @@ def require_user(
         raise HTTPException(status_code=401, detail="Account no longer exists")
     return user
 
+def optional_user(
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
+    db: Session = Depends(get_db)
+) -> User | None:
+    # Public demo reads remain possible; authenticated administrators can see
+    # the account identity behind an approval, without exposing it to guests.
+    return require_user(credentials=credentials, db=db) if credentials else None
+
 def require_admin(user: User = Depends(require_user)) -> User:
     if user.role != "admin":
         raise HTTPException(status_code=403, detail="Administrator access required")
