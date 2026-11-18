@@ -1,0 +1,25 @@
+services:
+  testdb:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: continuity_test
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d continuity_test"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+  test:
+    build: ./backend
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@testdb:5432/continuity_test
+      SECRET_KEY: ${SECRET_KEY}
+      DEMO_ADMIN_USERNAME: ${DEMO_ADMIN_USERNAME}
+      DEMO_ADMIN_PASSWORD: ${DEMO_ADMIN_PASSWORD}
+    depends_on:
+      testdb:
+        condition: service_healthy
+    command: sh -c "alembic upgrade head && pytest -q"
