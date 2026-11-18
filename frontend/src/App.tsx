@@ -78,6 +78,7 @@ export default function App() {
   const [focus, setFocus] = useState<ClassSession | null>(null);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [impacts, setImpacts] = useState<Impact[]>([]);
+  const [impactFetch, setImpactFetch] = useState<{ id: number | null; phase: 'idle' | 'loading' | 'ready' | 'error' }>({ id: null, phase: 'idle' });
   const [plans, setPlans] = useState<Proposal[]>([]);
   const [rejected, setRejected] = useState<Record<string, Rejection[]>>({});
   const [planMessage, setPlanMessage] = useState('');
@@ -130,14 +131,19 @@ export default function App() {
   useEffect(() => {
     if (mode !== 'workspace' || selectedId === null) return;
     let active = true;
+    setImpactFetch({ id: selectedId, phase: 'loading' });
     Promise.all([getImpacts(selectedId), getPlans(selectedId)]).then(([affected, saved]) => {
       if (!active) return;
       setImpacts(affected);
       setPlans(saved);
       setRejected(saved[0]?.details.rejected ?? {});
       setPlanMessage('');
+      setImpactFetch({ id: selectedId, phase: 'ready' });
     }).catch(cause => {
-      if (active) setError(String(cause));
+      if (!active) return;
+      setImpacts([]); setPlans([]);
+      setImpactFetch({ id: selectedId, phase: 'error' });
+      setError('Could not load recovery information: ' + String(cause));
     });
     return () => { active = false; };
   }, [mode, selectedId]);
@@ -151,24 +157,29 @@ export default function App() {
   const hiddenTestIncidents = incidents.filter(item => automatedTest(item.title));
   const operationalIncidents = incidents.filter(item => !automatedTest(item.title));
   const selectedIncident = incidents.find(item => item.id === selectedId);
+  const impactLoading = selectedId !== null && (impactFetch.id !== selectedId || impactFetch.phase === 'loading' || impactFetch.phase === 'idle');
+  const impactFailed = selectedId !== null && impactFetch.id === selectedId && impactFetch.phase === 'error';
   const roomById = (id: number | null) => rooms.find(item => item.id === id);
   const buildingById = (id: number | null) => buildings.find(item => item.id === id);
   const activeRoomCount = roomsShown.length;
 
   function enterAs(account: Account) {
-    setProfile(account); setError(''); setNotice(''); setTab('schedule'); setMode('workspace');
+    setProfile(account); setError(''); setNotice(''); setTab('schedule'); setImpactFetch({id:null,phase:'idle'}); setMode('workspace');
   }
   function explore() {
     clearToken(); setProfile(null); setError(''); setNotice('');
-    setTab('schedule'); setMode('workspace');
+    setTab('schedule'); setImpactFetch({id:null,phase:'idle'}); setMode('workspace');
   }
   function exit() {
     clearToken(); setProfile(null); setError(''); setNotice('');
-    setMode('auth'); setTab('schedule');
+    setMode('auth'); setTab('schedule'); setImpactFetch({id:null,phase:'idle'});
   }
   function reviewIncident(id: number) {
-    setSelectedId(id);
-    setPlans([]); setImpacts([]); setRejected({}); setPlanMessage('');
+    if (id !== selectedId) {
+      setSelectedId(id);
+      setPlans([]); setImpacts([]); setRejected({}); setPlanMessage('');
+      setImpactFetch({ id, phase: 'loading' });
+    }
     setTab('recovery'); setError(''); setNotice('');
   }
   async function makePlans() {
@@ -380,7 +391,7 @@ export default function App() {
               </select>
               {selectedIncident && <p>{kindName[selectedIncident.kind]} · {formatWindow(selectedIncident.start_at, selectedIncident.end_at)}</p>}
             </div>
-            <button className="button primary" disabled={!isAdmin || busy || !impacts.length}
+            <button className="button primary" disabled={!isAdmin || busy || impactLoading || impactFailed || !impacts.length}
               onClick={() => void makePlans()}>{busy ? 'Working…' : 'Find available rooms'}</button>
           </div>
           {!isAdmin && <div className="helper-band">
@@ -392,8 +403,10 @@ export default function App() {
           <div className="content-surface impact-surface">
             <div className="section-title"><div><h2>Classes that need a new room</h2>
               <p>The engine checks which requirements are actually affected, not merely which rooms are nearby.</p></div>
-              <span className="small-count">{impacts.length} affected</span></div>
-            {impacts.length ? impacts.map(item => <div className="impact-row" key={item.session_id}>
+              <span className="small-count">{impactLoading ? 'Checking…' : impactFailed ? 'Unavailable' : impacts.length + ' affected'}</span></div>
+            {impactLoading ? <div className="empty-panel" role="status">Checking affected classes and saved recovery plans…</div>
+              : impactFailed ? <div className="empty-panel">Recovery information could not be loaded. Please select this incident again or refresh the page.</div>
+              : impacts.length ? impacts.map(item => <div className="impact-row" key={item.session_id}>
               <div className="impact-number">{item.code}</div>
               <div className="impact-main"><strong>{item.title}</strong><small>{item.original_room} · {timeAtCampus(item.start_at)}–{timeAtCampus(item.end_at)}</small></div>
               <div className="impact-reason">{item.reason}</div>
@@ -401,9 +414,11 @@ export default function App() {
           </div>
           <div className="section-title results-heading"><div><h2>Room alternatives</h2>
             <p>Only feasible plans covering every affected class can be approved.</p></div>
-            <span className="small-count">{plans.length} saved plans</span></div>
+            <span className="small-count">{impactLoading ? 'Loading…' : impactFailed ? 'Unavailable' : plans.length + ' saved plans'}</span></div>
           {planMessage && <div className={'result-note ' + (plans.length ? 'success' : '')}>{planMessage}</div>}
-          {plans.length ? <div className="plan-list">
+          {impactLoading ? <div className="content-surface empty-results"><p role="status">Loading saved recovery plans…</p></div>
+            : impactFailed ? <div className="content-surface empty-results"><p>Could not load saved recovery plans. Please try again.</p></div>
+            : plans.length ? <div className="plan-list">
             {plans.map((plan, index) => <article key={plan.id} className={'plan-surface ' + (index === 0 ? 'preferred' : '')}>
               <div className="plan-top">
                 <div><small className="eyebrow">{index === 0 ? 'HIGHEST RANKED OPTION' : 'ALTERNATIVE ' + (index + 1)}</small>
