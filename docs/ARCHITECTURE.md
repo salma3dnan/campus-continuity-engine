@@ -21,17 +21,25 @@ flowchart LR
 
 | Module | Purpose |
 |---|---|
-| frontend/src/App.tsx | Six UI screens, error/loading/empty/success states, forms, plan comparison and approval |
-| frontend/src/api.ts | Typed HTTP wrapper, bearer tokens and consistent error handling |
+| frontend/src/App.tsx | Schedule-first workspace, room-by-time calendar, filtered cases, plan comparison, administrator actions and guest read-only mode |
+| frontend/src/AuthScreen.tsx | Dedicated sign-in and registration screen; explore-as-guest entry |
+| frontend/src/api.ts | Typed HTTP wrapper, account registration/session verification, bearer tokens and consistent error handling |
 | frontend/src/types.ts | Client-side request/response contracts |
 | backend/app/main.py | FastAPI validation, REST endpoints and response serialization |
-| backend/app/security.py | Hashed passwords, JWT, admin-only write dependency |
+| backend/app/security.py | Argon2 passwords, JWT, authenticated-account lookup and admin-only write dependency |
 | backend/app/models.py | PostgreSQL ORM entity declarations |
 | backend/app/engine.py | Disruption impact, room validity, explicit rejection reasons, multi-session search |
 | backend/app/approval.py | Incident-first locking, live revalidation, atomic updates and audit |
 | backend/app/seed.py | Idempotent synthetic campus fixtures |
 | backend/alembic/versions/0001_initial.py | Normalized SQL schema and PostgreSQL booking exclusion constraint |
-| scripts/*.ps1 | Private Windows development database, API, frontend and test startup |
+| scripts/*.ps1 | Private Windows database, persistent one-command startup, safe shutdown and test commands |
+
+## Account roles and access
+
+- Guests may explore the API-backed sample calendar without logging in.
+- Staff may register themselves with an email/password. They receive a **staff** role enforced by the backend and read-only access; they cannot choose Admin during registration.
+- Administrators use the locally seeded `.env` account to create incidents, generate plans and approve schedule changes. Every write is guarded by the server-side role dependency.
+- The initial PostgreSQL `users` table already supported account roles, so onboarding required **no database reset or migration**.
 
 ## Execution steps
 

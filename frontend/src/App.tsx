@@ -1,326 +1,493 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
+import AuthScreen from './AuthScreen';
 import {
-  approvePlan, clearToken, createIncident, generatePlans, getAudit, getBuildings,
-  getImpacts, getIncidents, getOverview, getPlans, getRooms, getSessions, getToken, login
+  approvePlan, clearToken, createIncident, generatePlans, getAccount, getAudit,
+  getBuildings, getImpacts, getIncidents, getOverview, getPlans, getRooms,
+  getSessions, getToken, type Account
 } from './api';
-import type { AuditEvent, Building, ClassSession, Impact, Incident, Overview, Proposal, Rejection, Room, Tab } from './types';
+import type {
+  AuditEvent, Building, ClassSession, Impact, Incident, Overview, Proposal,
+  Rejection, Room, Tab
+} from './types';
 
-const navigation: { tab: Tab; icon: string; title: string }[] = [
-  { tab: 'overview', icon: '◫', title: 'Dashboard' },
-  { tab: 'schedule', icon: '▦', title: 'Schedule' },
-  { tab: 'rooms', icon: '⌂', title: 'Resources' },
-  { tab: 'incidents', icon: '⚑', title: 'Disruptions' },
-  { tab: 'recovery', icon: '↗', title: 'Recovery planning' },
-  { tab: 'audit', icon: '☷', title: 'Audit history' }
+const nav: { tab: Tab; label: string; glyph: string }[] = [
+  { tab: 'schedule', label: 'Timetable', glyph: '▦' },
+  { tab: 'incidents', label: 'Disruptions', glyph: '!' },
+  { tab: 'recovery', label: 'Recovery plans', glyph: '↗' },
+  { tab: 'rooms', label: 'Rooms & resources', glyph: '⌂' },
+  { tab: 'audit', label: 'Activity', glyph: '≡' }
 ];
-const fmt = (value: string) => new Intl.DateTimeFormat('en-MY', {
-  timeZone: 'Asia/Kuala_Lumpur', month: 'short', day: 'numeric', year: 'numeric',
-  hour: '2-digit', minute: '2-digit', hour12: true
-}).format(new Date(value));
-const kindLabel: Record<Incident['kind'], string> = {
-  closure: 'Room closure', network: 'Network outage', equipment: 'Equipment unavailable'
+const facilityTime = new Intl.DateTimeFormat('en-GB', {
+  timeZone: 'Asia/Kuala_Lumpur', hour: '2-digit', minute: '2-digit', hourCycle: 'h23'
+});
+const fullDate = new Intl.DateTimeFormat('en-GB', {
+  timeZone: 'Asia/Kuala_Lumpur', weekday: 'long', day: 'numeric', month: 'long', year: 'numeric'
+});
+const shortDate = new Intl.DateTimeFormat('en-GB', {
+  timeZone: 'Asia/Kuala_Lumpur', day: 'numeric', month: 'short', year: 'numeric'
+});
+const hours = Array.from({ length: 10 }, (_, i) => i + 8);
+const baseline = (name: string) => /^[ABCD] ·/.test(name);
+const automatedTest = (name: string) =>
+  /^(Browser verified|Stale approval evidence|Block stale proposal)/.test(name);
+const kindName: Record<Incident['kind'], string> = {
+  closure: 'Space closure', network: 'Network outage', equipment: 'Equipment issue'
 };
+function localDay(iso: string) {
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Asia/Kuala_Lumpur', day: '2-digit', month: '2-digit', year: 'numeric'
+  }).formatToParts(new Date(iso));
+  const part = (type: string) => parts.find(item => item.type === type)?.value ?? '';
+  return part('year') + '-' + part('month') + '-' + part('day');
+}
+function addDays(date: string, amount: number) {
+  const base = new Date(date + 'T12:00:00Z');
+  base.setUTCDate(base.getUTCDate() + amount);
+  return base.toISOString().slice(0, 10);
+}
+function minutesAtCampus(iso: string) {
+  const parts = facilityTime.formatToParts(new Date(iso));
+  const p = (type: string) => Number(parts.find(x => x.type === type)?.value ?? '0');
+  return p('hour') * 60 + p('minute');
+}
+function dayAtCampus(iso: string) { return shortDate.format(new Date(iso)); }
+function timeAtCampus(iso: string) { return facilityTime.format(new Date(iso)); }
+function formatWindow(start: string, end: string) {
+  return dayAtCampus(start) + ' · ' + timeAtCampus(start) + '–' + timeAtCampus(end);
+}
+function labelForAudit(action: string) {
+  if (action === 'recovery_approved') return 'Recovery approved';
+  if (action === 'recovery_generated') return 'Recovery options generated';
+  if (action === 'disruption_created') return 'Disruption recorded';
+  return action.replaceAll('_', ' ');
+}
 
 export default function App() {
-  const [tab, setTab] = useState<Tab>('overview');
+  const [mode, setMode] = useState<'checking' | 'auth' | 'workspace'>('checking');
+  const [profile, setProfile] = useState<Account | null>(null);
+  const [tab, setTab] = useState<Tab>('schedule');
   const [overview, setOverview] = useState<Overview | null>(null);
   const [buildings, setBuildings] = useState<Building[]>([]);
   const [rooms, setRooms] = useState<Room[]>([]);
   const [sessions, setSessions] = useState<ClassSession[]>([]);
   const [incidents, setIncidents] = useState<Incident[]>([]);
   const [audit, setAudit] = useState<AuditEvent[]>([]);
+  const [day, setDay] = useState('2027-02-09');
+  const [buildingFilter, setBuildingFilter] = useState<string>('initial');
+  const [roomFilter, setRoomFilter] = useState('');
+  const [focus, setFocus] = useState<ClassSession | null>(null);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [impacts, setImpacts] = useState<Impact[]>([]);
   const [plans, setPlans] = useState<Proposal[]>([]);
+  const [rejected, setRejected] = useState<Record<string, Rejection[]>>({});
   const [planMessage, setPlanMessage] = useState('');
-  const [rejectedOptions, setRejectedOptions] = useState<Record<string, Rejection[]>>({});
-  const [loggedIn, setLoggedIn] = useState(Boolean(getToken()));
-  const [username, setUsername] = useState('');
-  const [password, setPassword] = useState('');
+  const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
-  const [showForm, setShowForm] = useState(false);
+  const [showIncidentForm, setShowIncidentForm] = useState(false);
   const [draft, setDraft] = useState({
-    title: '', kind: 'closure' as Incident['kind'], location: 'room',
+    title: '', kind: 'closure' as Incident['kind'], scope: 'room',
     room_id: '', building_id: '', equipment_kind: 'projector', quantity_lost: 1,
     start_at: '2027-02-17T08:00', end_at: '2027-02-17T12:00'
   });
-  const roomName = (id: number | null) => rooms.find(r => r.id === id)?.code ?? '—';
-  const buildingName = (id: number | null) => buildings.find(b => b.id === id)?.name ?? '—';
-  const selected = incidents.find(i => i.id === selectedId);
 
-  const refresh = useCallback(async () => {
-    try {
-      const [o, b, r, s, i, a] = await Promise.all([
-        getOverview(), getBuildings(), getRooms(), getSessions(), getIncidents(), getAudit()
-      ]);
-      setOverview(o); setBuildings(b); setRooms(r); setSessions(s); setIncidents(i); setAudit(a);
-      setSelectedId(prev => prev ?? (i.length ? i[i.length - 1].id : null));
-    } catch (e) { setError('Cannot load application data: ' + String(e)); }
-    finally { setLoading(false); }
+  const isAdmin = profile?.role === 'admin';
+  const isGuest = profile === null;
+
+  useEffect(() => {
+    if (!getToken()) { setMode('auth'); return; }
+    getAccount().then(account => {
+      setProfile(account);
+      setMode('workspace');
+    }).catch(() => {
+      clearToken();
+      setProfile(null);
+      setMode('auth');
+    });
   }, []);
 
-  useEffect(() => { void refresh(); }, [refresh]);
-  useEffect(() => {
-    if (!selectedId) { setImpacts([]); setPlans([]); setRejectedOptions({}); return; }
-    let active = true;
-    Promise.all([getImpacts(selectedId), getPlans(selectedId)]).then(([impact, options]) => {
-      if (active) { setImpacts(impact); setPlans(options); setPlanMessage(''); setRejectedOptions(options[0]?.details.rejected ?? {}); }
-    }).catch(e => { if (active) setError(String(e)); });
-    return () => { active = false; };
-  }, [selectedId]);
-
-  async function signIn(e: React.FormEvent) {
-    e.preventDefault(); setBusy(true); setError(''); setNotice('');
+  const refresh = useCallback(async () => {
+    setLoading(true);
     try {
-      await login(username.trim(), password);
-      setLoggedIn(true); setPassword(''); setNotice('Administrator authenticated. Recovery actions are available.');
-    } catch (err) { setError(String(err)); }
-    finally { setBusy(false); }
+      const [summary, buildingsData, roomsData, sessionsData, incidentsData, auditData] = await Promise.all([
+        getOverview(), getBuildings(), getRooms(), getSessions(), getIncidents(), getAudit()
+      ]);
+      setOverview(summary); setBuildings(buildingsData); setRooms(roomsData);
+      setSessions(sessionsData); setIncidents(incidentsData); setAudit(auditData);
+      setDay(previous => previous || (sessionsData.length ? localDay(sessionsData[0].start_at) : '2027-02-09'));
+      setBuildingFilter(previous => previous === 'initial' && buildingsData.length ? String(buildingsData[0].id) : previous);
+      setSelectedId(previous => previous ?? (incidentsData.find(item => baseline(item.title))?.id ?? incidentsData[0]?.id ?? null));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Unable to load campus data');
+    } finally { setLoading(false); }
+  }, []);
+
+  useEffect(() => {
+    if (mode === 'workspace') void refresh();
+  }, [mode, refresh]);
+
+  useEffect(() => {
+    if (mode !== 'workspace' || selectedId === null) return;
+    let active = true;
+    Promise.all([getImpacts(selectedId), getPlans(selectedId)]).then(([affected, saved]) => {
+      if (!active) return;
+      setImpacts(affected);
+      setPlans(saved);
+      setRejected(saved[0]?.details.rejected ?? {});
+      setPlanMessage('');
+    }).catch(cause => {
+      if (active) setError(String(cause));
+    });
+    return () => { active = false; };
+  }, [mode, selectedId]);
+
+  const roomsShown = useMemo(() => rooms.filter(room =>
+    (buildingFilter === 'all' || room.building_id === Number(buildingFilter)) &&
+    (!roomFilter || room.code.toLowerCase().includes(roomFilter.toLowerCase()))
+  ), [rooms, buildingFilter, roomFilter]);
+  const dateSessions = useMemo(() => sessions.filter(session => localDay(session.start_at) === day),
+    [sessions, day]);
+  const hiddenTestIncidents = incidents.filter(item => automatedTest(item.title));
+  const operationalIncidents = incidents.filter(item => !automatedTest(item.title));
+  const selectedIncident = incidents.find(item => item.id === selectedId);
+  const roomById = (id: number | null) => rooms.find(item => item.id === id);
+  const buildingById = (id: number | null) => buildings.find(item => item.id === id);
+  const activeRoomCount = roomsShown.length;
+
+  function enterAs(account: Account) {
+    setProfile(account); setError(''); setNotice(''); setTab('schedule'); setMode('workspace');
   }
-  function signOut() {
-    clearToken(); setLoggedIn(false); setNotice('Signed out. Read-only data remains visible.');
+  function explore() {
+    clearToken(); setProfile(null); setError(''); setNotice('');
+    setTab('schedule'); setMode('workspace');
   }
-  async function generate() {
-    if (!selectedId || !loggedIn) return;
+  function exit() {
+    clearToken(); setProfile(null); setError(''); setNotice('');
+    setMode('auth'); setTab('schedule');
+  }
+  function reviewIncident(id: number) {
+    setSelectedId(id);
+    setPlans([]); setImpacts([]); setRejected({}); setPlanMessage('');
+    setTab('recovery'); setError(''); setNotice('');
+  }
+  async function makePlans() {
+    if (!isAdmin || selectedId === null) return;
     setBusy(true); setError(''); setNotice('');
     try {
-      const result = await generatePlans(selectedId);
-      setPlans(result.plans); setImpacts(result.impacts); setPlanMessage(result.message);
-      setRejectedOptions(result.rejected);
-      setNotice(result.plans.length
-        ? result.plans.length + ' complete recovery plan(s) generated and stored.'
-        : 'No complete plan could be generated. Review rejection reasons below.');
+      const data = await generatePlans(selectedId);
+      setImpacts(data.impacts); setPlans(data.plans);
+      setRejected(data.rejected); setPlanMessage(data.message);
+      setNotice(data.plans.length
+        ? 'Recovery options are ready. Review the room changes before approval.'
+        : 'No complete recovery is possible with current resources.');
       await refresh();
-    } catch (err) { setError(String(err)); }
+    } catch (cause) { setError(String(cause)); }
     finally { setBusy(false); }
   }
   async function approve(id: number) {
-    if (!loggedIn) return;
+    if (!isAdmin) return;
     setBusy(true); setError(''); setNotice('');
     try {
       const result = await approvePlan(id);
-      setNotice('Plan #' + id + ' approved: ' + result.changes.length + ' room assignment(s) updated atomically.');
+      setNotice('Plan #' + id + ' approved. ' + result.changes.length +
+        ' room assignment(s) updated. Session times are unchanged.');
       await refresh();
-      if (selectedId) {
-        setImpacts(await getImpacts(selectedId));
-        setPlans(await getPlans(selectedId));
+      if (selectedId !== null) {
+        const [updatedImpact, updatedPlans] = await Promise.all([getImpacts(selectedId), getPlans(selectedId)]);
+        setImpacts(updatedImpact); setPlans(updatedPlans);
       }
-    } catch (err) { setError('Approval rejected: ' + String(err)); }
+    } catch (cause) { setError('Approval rejected: ' + String(cause)); }
     finally { setBusy(false); }
   }
-  async function submitIncident(e: React.FormEvent) {
-    e.preventDefault(); setBusy(true); setError(''); setNotice('');
+  async function createDisruption(event: FormEvent) {
+    event.preventDefault(); if (!isAdmin) return;
+    setBusy(true); setError(''); setNotice('');
     try {
-      if (new Date(draft.start_at) >= new Date(draft.end_at)) {
-        throw new Error('End time must be later than start time');
-      }
-      const equipment = draft.kind === 'equipment';
-      const location = equipment ? 'room' : draft.location;
+      if (draft.start_at >= draft.end_at) throw new Error('End time must be after start time.');
+      const roomTarget = draft.kind === 'equipment' || draft.scope === 'room';
       const payload = {
         title: draft.title, kind: draft.kind,
-        room_id: location === 'room' ? Number(draft.room_id) || null : null,
-        building_id: location === 'building' ? Number(draft.building_id) || null : null,
-        equipment_kind: equipment ? draft.equipment_kind : null,
-        quantity_lost: equipment ? Number(draft.quantity_lost) : null,
-        start_at: new Date(draft.start_at).toISOString(),
-        end_at: new Date(draft.end_at).toISOString()
+        room_id: roomTarget ? Number(draft.room_id) || null : null,
+        building_id: roomTarget ? null : Number(draft.building_id) || null,
+        equipment_kind: draft.kind === 'equipment' ? draft.equipment_kind : null,
+        quantity_lost: draft.kind === 'equipment' ? Number(draft.quantity_lost) : null,
+        start_at: new Date(draft.start_at + '+08:00').toISOString(),
+        end_at: new Date(draft.end_at + '+08:00').toISOString()
       };
-      const item = await createIncident(payload);
-      setNotice('Disruption recorded. You can now inspect its impact and generate recovery plans.');
-      setShowForm(false); await refresh(); setSelectedId(item.id); setTab('recovery');
-    } catch (err) { setError(String(err)); }
+      const created = await createIncident(payload);
+      setShowIncidentForm(false); await refresh();
+      reviewIncident(created.id);
+      setNotice('Disruption recorded. The affected sessions are shown below.');
+    } catch (cause) { setError(String(cause)); }
     finally { setBusy(false); }
   }
-  const statusPill = (status: string) => (
-    <span className={'pill ' + (status === 'approved' ? 'good' : status === 'active' ? 'alert' : '')}>{status}</span>
-  );
-  const incidentTable = (items: Incident[]) => (
-    <div className="table-scroll"><table>
-      <thead><tr><th>Disruption</th><th>Type</th><th>Target</th><th>Window (MYT)</th><th>Status</th><th></th></tr></thead>
-      <tbody>{items.map(i => <tr key={i.id}>
-        <td><b>{i.title}</b><small>INC-{String(i.id).padStart(3, '0')}</small></td>
-        <td>{kindLabel[i.kind]}</td><td>{i.room_id ? roomName(i.room_id) : buildingName(i.building_id)}</td>
-        <td>{fmt(i.start_at)}<small>to {fmt(i.end_at)}</small></td><td>{statusPill(i.status)}</td>
-        <td><button className="text-button" onClick={() => {setSelectedId(i.id);setTab('recovery');}}>Inspect →</button></td>
-      </tr>)}</tbody>
-    </table>{!items.length && <div className="empty">No incidents recorded.</div>}</div>
-  );
-  return <div className="app">
+
+  if (mode === 'checking') return <div className="boot-screen">Checking your session…</div>;
+  if (mode === 'auth') return <AuthScreen onAuthenticated={enterAs} onExplore={explore}/>;
+
+  return <div className="workspace">
     <aside className="sidebar">
-      <div className="logo"><span className="logo-mark">C<span>↗</span></span>
-        <div><strong>CONTINUITY</strong><small>CAMPUS OPERATIONS</small></div></div>
-      <div className="nav-label">WORKSPACE</div>
-      <nav aria-label="Main navigation">{navigation.map(n =>
-        <button key={n.tab} className={'nav-item ' + (tab === n.tab ? 'selected' : '')}
-          onClick={() => setTab(n.tab)}><span className="nav-icon">{n.icon}</span>{n.title}</button>)}</nav>
-      <div className="sidebar-bottom"><span className="system-dot"></span>
-        <div><b>LOCAL DEMO</b><small>Constraint-based recovery · v1.0</small></div></div>
+      <div className="identity">
+        <span className="identity-mark">C</span>
+        <div className="identity-title"><strong>Campus Continuity</strong><small>OPERATIONS</small></div>
+      </div>
+      <div className="sidebar-section">WORKSPACE</div>
+      <nav aria-label="Main navigation" className="sidebar-nav">
+        {nav.map(item => <button key={item.tab} className={'nav-link ' + (tab === item.tab ? 'active' : '')}
+          onClick={() => { setTab(item.tab); setError(''); setNotice(''); }}>
+          <span className="nav-glyph" aria-hidden="true">{item.glyph}</span>
+          <span>{item.label}</span>
+          {item.tab === 'incidents' && overview?.affected_sessions ? <i className="nav-count">{overview.affected_sessions}</i> : null}
+        </button>)}
+      </nav>
+      <div className="sidebar-bottom">
+        <span className="status-dot"/><div><strong>Local demo workspace</strong><small>Illustrative university data</small></div>
+      </div>
     </aside>
-    <main className="main">
-      <header className="topbar">
-        <div><div className="eyebrow">ACADEMIC OPERATIONS / CONTROL CENTRE</div>
-          <h1>Campus Continuity Engine</h1><p>Resolve disruptions before they become scheduling conflicts.</p></div>
-        <div className="auth">
-          {loggedIn ? <div className="signed-in"><span className="avatar">A</span><div><b>Administrator</b><small>Authorized access</small></div>
-            <button className="subtle" onClick={signOut}>Sign out</button></div>
-            : <form onSubmit={signIn} className="login-form">
-              <input aria-label="Admin username" placeholder="Admin username" value={username}
-                onChange={e => setUsername(e.target.value)} required/>
-              <input aria-label="Password" placeholder="Password" type="password" value={password}
-                onChange={e => setPassword(e.target.value)} required/>
-              <button disabled={busy} className="primary" type="submit">Sign in</button></form>}
+    <div className="workspace-content">
+      <header className="workspace-topbar">
+        <span className="header-title">Academic operations <span className="header-divider">/</span> <b>{nav.find(item => item.tab === tab)?.label}</b></span>
+        <div className="header-right">
+          <span className="sample-indicator">SAMPLE DATA</span>
+          <button className="account-control" onClick={exit} title="Sign out or return to login">
+            <span className="account-circle">{profile?.username.charAt(0).toUpperCase() ?? 'G'}</span>
+            <span className="account-text"><strong>{profile?.username ?? 'Demo visitor'}</strong><small>{isAdmin ? 'Administrator' : profile ? 'Staff · read-only' : 'Guest · read-only'}</small></span>
+            <span className="account-arrow">↗</span>
+          </button>
         </div>
       </header>
-      {error && <div role="alert" className="banner error"><b>Action needs attention</b><span>{error}</span><button onClick={() => setError('')}>×</button></div>}
-      {notice && <div role="status" className="banner success"><span>{notice}</span><button onClick={() => setNotice('')}>×</button></div>}
-      {loading && <div className="loading">Loading live campus data…</div>}
-      {tab === 'overview' && <section>
-        <div className="section-heading"><div><div className="kicker">OPERATIONS OVERVIEW</div><h2>Campus at a glance</h2>
-          <p>A clear view of impact, available recovery decisions, and operational progress.</p></div>
-          <button className="secondary" onClick={() => void refresh()} disabled={busy}>↻ Refresh data</button></div>
-        <div className="metrics">
-          {[
-            ['Active incidents', overview?.active_disruptions ?? '—', 'Open operational disruptions', 'orange'],
-            ['Affected sessions', overview?.affected_sessions ?? '—', 'Classes requiring review', 'red'],
-            ['Pending proposals', overview?.pending_proposals ?? '—', 'Ready for administrator decision', 'blue'],
-            ['Approved recoveries', overview?.approved_recoveries ?? '—', 'Schedule corrections recorded', 'green'],
-          ].map(([label, num, caption, tone]) => <div className={'metric ' + tone} key={label}>
-            <span>{label}</span><strong>{num}</strong><small>{caption}</small></div>)}</div>
-        <div className="panel"><div className="panel-header"><div><h3>Incident queue</h3>
-          <p>Each disruption is linked to stored sessions and resources.</p></div>
-          <button className="text-button" onClick={() => setTab('incidents')}>All disruptions →</button></div>
-          {incidentTable(incidents.slice(0, 5))}</div>
-        <div className="info-strip"><b>How recovery works</b><span>Detect impact → Validate alternatives → Rank complete plans → Approve atomically → Audit every change</span></div>
-      </section>}
-      {tab === 'schedule' && <section>
-        <div className="section-heading"><div><div className="kicker">RESOURCE PLANNING</div><h2>Class schedule</h2>
-          <p>{sessions.length} dated sessions. Every recovery preserves the original class time.</p></div></div>
-        <div className="panel"><div className="table-scroll"><table>
-          <thead><tr><th>Course / Session</th><th>Campus date & time (MYT)</th><th>Participants</th><th>Assigned room</th><th>Network</th><th>State</th></tr></thead>
-          <tbody>{sessions.map(s => <tr key={s.id}>
-            <td><b>{s.title}</b><small>{s.code}</small></td>
-            <td>{fmt(s.start_at)}<small>Ends {fmt(s.end_at)}</small></td><td>{s.attendees}</td>
-            <td><b>{s.room}</b>{s.recovered && <small>Previously {s.original_room}</small>}</td>
-            <td>{s.needs_network ? 'Required' : 'Not required'}</td>
-            <td>{s.recovered ? <span className="pill good">Recovered</span> : <span className="pill">Scheduled</span>}</td>
-          </tr>)}</tbody>
-        </table></div></div></section>}
-      {tab === 'rooms' && <section><div className="section-heading"><div><div className="kicker">CAMPUS ASSETS</div><h2>Rooms & capabilities</h2>
-        <p>Capacity, available equipment inventory, and network capability inform every recommendation.</p></div></div>
-        <div className="rooms-grid">{rooms.map(room => <article className="room-card" key={room.id}>
-          <div className="room-head"><b>{room.code}</b><span className="pill">{buildingName(room.building_id)}</span></div>
-          <strong>{room.capacity} seats</strong><p>Network: {room.network ? '✓ Available' : 'Not installed'}</p>
-          <div className="equipment">{Object.entries(room.equipment).map(([kind, count]) =>
-            <span key={kind}>{kind} × {count}</span>)}</div>
-        </article>)}</div></section>}
-      {tab === 'incidents' && <section>
-        <div className="section-heading"><div><div className="kicker">INCIDENT MANAGEMENT</div><h2>Disruptions</h2>
-          <p>Record a problem once. The impact engine determines which classes are truly affected.</p></div>
-          <button className="primary" disabled={!loggedIn || busy} onClick={() => setShowForm(!showForm)}>
-            {showForm ? 'Close form' : '+ Report disruption'}</button></div>
-        {!loggedIn && <div className="info-strip">Administrator sign-in is required to create incidents or approve recovery plans.</div>}
-        {showForm && <form className="panel incident-form" onSubmit={submitIncident}>
-          <h3>New operational disruption</h3>
-          <div className="form-grid">
-            <label className="wide">Incident title<input value={draft.title} minLength={4} maxLength={180} required
-              onChange={e => setDraft({...draft, title: e.target.value})} placeholder="e.g. Network switch outage"/></label>
-            <label>Disruption type<select value={draft.kind} onChange={e => setDraft({...draft, kind: e.target.value as Incident['kind']})}>
-              <option value="closure">Room / building closure</option><option value="network">Network outage</option>
-              <option value="equipment">Equipment unavailability</option></select></label>
-            {draft.kind !== 'equipment' && <label>Target type<select value={draft.location}
-              onChange={e => setDraft({...draft, location:e.target.value})}>
-              <option value="room">Room</option><option value="building">Building</option></select></label>}
-            {(draft.kind === 'equipment' || draft.location === 'room') ?
-              <label>Target room<select required value={draft.room_id} onChange={e => setDraft({...draft,room_id:e.target.value})}>
-                <option value="">Choose a room</option>{rooms.map(r => <option key={r.id} value={r.id}>{r.code}</option>)}</select></label> :
-              <label>Target building<select required value={draft.building_id} onChange={e => setDraft({...draft,building_id:e.target.value})}>
-                <option value="">Choose a building</option>{buildings.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}</select></label>}
-            {draft.kind === 'equipment' && <>
-              <label>Equipment type<input required value={draft.equipment_kind}
-                onChange={e => setDraft({...draft,equipment_kind:e.target.value})}/></label>
-              <label>Quantity lost<input type="number" min="1" required value={draft.quantity_lost}
-                onChange={e => setDraft({...draft,quantity_lost:Number(e.target.value)})}/></label></>}
-            <label>Start (campus local time)<input type="datetime-local" required value={draft.start_at}
-              onChange={e => setDraft({...draft,start_at:e.target.value})}/></label>
-            <label>End (campus local time)<input type="datetime-local" required value={draft.end_at}
-              onChange={e => setDraft({...draft,end_at:e.target.value})}/></label>
-          </div><div className="form-actions"><button disabled={busy || !loggedIn} className="primary">Save disruption</button></div>
-        </form>}
-        <div className="panel"><div className="panel-header"><h3>All incidents</h3><span className="pill">{incidents.length} recorded</span></div>
-          {incidentTable(incidents)}</div></section>}
-      {tab === 'recovery' && <section>
-        <div className="section-heading"><div><div className="kicker">DECISION SUPPORT</div><h2>Recovery planning</h2>
-          <p>Evaluate hard constraints, compare scored plans, and apply a safe schedule correction.</p></div></div>
-        <div className="panel selection-panel"><div><label htmlFor="incident-choice">Select a disruption</label>
-          <select id="incident-choice" value={selectedId ?? ''} onChange={e => setSelectedId(Number(e.target.value))}>
-            {incidents.slice().sort((a,b) => a.id - b.id).map(i => <option key={i.id} value={i.id}>{i.title}</option>)}</select></div>
-          <button className="primary" onClick={() => void generate()} disabled={busy || !loggedIn || !selected || !impacts.length}>
-            {busy ? 'Processing…' : '↗ Generate recovery plans'}</button></div>
-        {!loggedIn && <div className="info-strip">Sign in as administrator to generate or approve a plan. Impact findings remain visible.</div>}
-        {selected && <div className="incident-summary">
-          <span className="pill alert">{kindLabel[selected.kind]}</span>
-          <b>{selected.room_id ? roomName(selected.room_id) : buildingName(selected.building_id)}</b>
-          <span>{fmt(selected.start_at)} — {fmt(selected.end_at)}</span></div>}
-        <div className="panel"><div className="panel-header"><div><h3>Verified impact</h3>
-          <p>Only sessions whose functional requirements are affected are included.</p></div>
-          <span className="count">{impacts.length} affected</span></div>
-          {!impacts.length ? <div className="empty">No currently affected sessions. The incident may already have been recovered.</div> :
-            <div className="impact-list">{impacts.map(i => <div className="impact-item" key={i.session_id}>
-              <div><strong>{i.title}</strong><small>{i.code} · {i.original_room} · {fmt(i.start_at)}</small></div>
-              <span>{i.reason}</span></div>)}</div>}</div>
-        <div className="panel"><div className="panel-header"><div><h3>Ranked recovery alternatives</h3>
-          <p>Only complete multi-session assignments are presented as feasible plans.</p></div>
-          <span className="pill">{plans.length} stored</span></div>
-          {planMessage && <div className="inline-message">{planMessage}</div>}
-          {!plans.length ? <div className="empty">No plans stored. Generate alternatives for an active incident.</div> :
-          <div className="plan-grid">{plans.map((p, idx) =>
-            <article key={p.id} className={'plan-card ' + (p.status === 'approved' ? 'approved-plan' : '')}>
-              <div className="plan-title"><div><span className="eyebrow">OPTION {idx+1} · PLAN #{p.id}</span>
-                <h4>{idx === 0 ? 'Recommended alternative' : 'Feasible alternative'}</h4></div>
-                {statusPill(p.status)}</div>
-              <div className="score-line"><strong>{p.score}</strong><span>total preference score</span></div>
-              <div className="assignment-list">{p.details.explanations.map(a =>
-                <div className="assignment" key={a.session_id}><div><b>{a.code}</b>
-                  <small>{a.old_room} → <strong>{a.new_room}</strong></small></div>
-                  <span className="score-chip">+{a.score.total}</span></div>)}</div>
-              <details><summary>Score breakdown & rejected rooms</summary>
-                {p.details.explanations.map(a => <div className="rejection-block" key={a.session_id}>
-                  <b>{a.code}: same building {a.score.same_building >= 0 ? '+' : ''}{a.score.same_building},
-                    spare capacity {a.score.unused_capacity}, excess equipment {a.score.excess_equipment}</b>
-                  {(p.details.rejected[String(a.session_id)] ?? []).map(r =>
-                    <p key={r.room_id}><strong>{r.room}</strong>: {r.reasons.join('; ')}</p>)}
-                </div>)}</details>
-              <button className="primary full" onClick={() => void approve(p.id)}
-                disabled={busy || !loggedIn || p.status !== 'pending'}>
-                {p.status === 'approved' ? '✓ Recovery approved' : p.status === 'pending' ? 'Approve & update schedule' : 'Plan ' + p.status}
-              </button>
-            </article>)}</div>}</div>
-        {plans.length === 0 && impacts.length > 0 && planMessage && <div className="panel">
-          <div className="panel-header"><div><h3>Why no complete plan exists</h3>
-            <p>No partial assignment will be applied. Every hard-constraint rejection is shown below.</p></div></div>
-          {impacts.map(impact => <div className="rejection-block no-solution-reasons" key={impact.session_id}>
-            <strong>{impact.code} · {impact.title}</strong>
-            {(rejectedOptions[String(impact.session_id)] ?? []).map(option => <p key={option.room_id}>
-              <b>{option.room}</b>: {option.reasons.join('; ')}
-            </p>)}
-            {!(rejectedOptions[String(impact.session_id)] ?? []).length &&
-              <p>No compatible replacement was found for this session.</p>}
-          </div>)}
-        </div>}
-      </section>}
-      {tab === 'audit' && <section><div className="section-heading"><div><div className="kicker">ACCOUNTABILITY</div><h2>Decision audit trail</h2>
-        <p>Trace incident submissions, plan generation and approved room changes.</p></div></div>
-        <div className="panel"><div className="table-scroll"><table>
-          <thead><tr><th>Event</th><th>Time (MYT)</th><th>Incident</th><th>Proposal</th><th>Recorded details</th></tr></thead>
-          <tbody>{audit.map(a => <tr key={a.id}><td><b>{a.action.replaceAll('_',' ')}</b></td>
-            <td>{fmt(a.occurred_at)}</td><td>{a.incident_id ?? '—'}</td>
-            <td>{a.proposal_id ?? '—'}</td>
-            <td><code>{JSON.stringify(a.details).slice(0, 220)}</code></td></tr>)}</tbody>
-        </table></div>{!audit.length && <div className="empty">No events yet.</div>}</div></section>}
-      <footer><span>Campus Continuity Engine · Synthetic university demonstration</span><span>All times displayed in Asia/Kuala_Lumpur</span></footer>
-    </main>
+      <main className="page">
+        {error && <div role="alert" className="alert-bar"><b>Something needs attention.</b> {error}<button aria-label="Dismiss error" onClick={() => setError('')}>×</button></div>}
+        {notice && <div role="status" className="notice-bar">{notice}<button aria-label="Dismiss notice" onClick={() => setNotice('')}>×</button></div>}
+        {loading && <div className="loading-bar">Updating campus records…</div>}
+        {tab === 'schedule' && <section className="screen">
+          <div className="page-heading"><div><div className="eyebrow">CAMPUS SCHEDULING</div>
+            <h1>Timetable</h1><p>See what is happening in each room, at a glance.</p></div>
+            <button className="button secondary" onClick={() => void refresh()} disabled={busy}>Refresh schedule</button>
+          </div>
+          <div className="calendar-toolbar">
+            <div className="date-navigation">
+              <button aria-label="Previous day" onClick={() => setDay(addDays(day, -1))}>‹</button>
+              <button aria-label="Next day" onClick={() => setDay(addDays(day, 1))}>›</button>
+              <div><strong>{fullDate.format(new Date(day + 'T12:00:00+08:00'))}</strong><small>Malaysia time</small></div>
+              <input aria-label="Choose date" type="date" value={day} onChange={e => setDay(e.target.value)}/>
+            </div>
+            <div className="toolbar-right">
+              <label><span>Building</span><select aria-label="Filter building" value={buildingFilter} onChange={e => setBuildingFilter(e.target.value)}>
+                <option value="all">All buildings</option>{buildings.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+              </select></label>
+              <label><span>Room</span><input aria-label="Search rooms" value={roomFilter} onChange={e => setRoomFilter(e.target.value)}
+                placeholder="Search room"/></label>
+            </div>
+          </div>
+          <div className="calendar-summary">
+            <div><span className="status-dot"/><strong>{dateSessions.length} sessions</strong> scheduled on this day</div>
+            <span>{activeRoomCount} rooms displayed · Click a class to inspect its assignment</span>
+          </div>
+          {roomsShown.length ? <div className="calendar-scroll">
+            <div className="timetable-grid" style={{ gridTemplateColumns: '74px repeat(' + roomsShown.length + ', minmax(190px, 1fr))',
+              minWidth: (roomsShown.length * 190 + 74) + 'px' }}>
+              <div className="time-heading">TIME</div>
+              {roomsShown.map(room => <div className="room-heading" key={room.id}><strong>{room.code}</strong>
+                <small>{buildingById(room.building_id)?.name ?? 'Campus'} · {room.capacity} seats</small></div>)}
+              <div className="time-column">{hours.map(hour => <div className="time-marker" key={hour}>{String(hour).padStart(2, '0')}:00</div>)}</div>
+              {roomsShown.map(room => <div className="room-timeline" key={room.id}>
+                {dateSessions.filter(s => s.room_id === room.id).map(s => {
+                  const begin = minutesAtCampus(s.start_at);
+                  const finish = minutesAtCampus(s.end_at);
+                  const top = (begin - 480) * 1.12;
+                  const height = Math.max(30, (finish - begin) * 1.12 - 4);
+                  return <button key={s.id} onClick={() => setFocus(s)} className={'class-block ' + (s.recovered ? 'recovered' : '')}
+                    style={{ top: Math.max(0, top) + 'px', height: height + 'px' }}>
+                    <b>{s.title}</b><small>{timeAtCampus(s.start_at)} – {timeAtCampus(s.end_at)}</small>
+                    <small>{s.code} · {s.attendees} people</small>
+                  </button>;
+                })}
+              </div>)}
+            </div>
+          </div> : <div className="empty-panel">No rooms match those filters. Try another building or room code.</div>}
+          <div className="calendar-legend"><span><i className="legend-swatch booked"/>Scheduled</span>
+            <span><i className="legend-swatch moved"/>Recovered · room reassigned</span>
+            <span>Times are never changed by the recovery engine.</span></div>
+          <div className="bottom-context">
+            <div><strong>When a room becomes unavailable</strong>
+              <p>Record the issue, review affected classes, and compare conflict-free recovery options before changing the schedule.</p></div>
+            <button className="text-action" onClick={() => setTab('incidents')}>View disruptions →</button>
+          </div>
+        </section>}
+        {tab === 'incidents' && <section className="screen">
+          <div className="page-heading"><div><div className="eyebrow">EXCEPTIONS</div>
+            <h1>Disruptions</h1><p>Identify the problem first. Recovery options come next.</p></div>
+            {isAdmin && <button className="button primary" onClick={() => setShowIncidentForm(!showIncidentForm)}>
+              {showIncidentForm ? 'Cancel' : '+ Report disruption'}</button>}
+          </div>
+          {!isAdmin && <div className="helper-band">Browsing in read-only mode. Sign in as administrator to report or resolve disruptions.</div>}
+          {showIncidentForm && isAdmin && <form onSubmit={createDisruption} className="form-surface">
+            <div className="section-title"><h2>Report a disruption</h2><span>Step 1 of 2 · Describe the problem</span></div>
+            <div className="form-grid">
+              <label className="full-field">Title<input required minLength={4} maxLength={180} value={draft.title}
+                placeholder="e.g. Network switch failure" onChange={e => setDraft({...draft,title:e.target.value})}/></label>
+              <label>Problem type<select value={draft.kind} onChange={e => setDraft({...draft,kind:e.target.value as Incident['kind']})}>
+                <option value="closure">Room or building closure</option><option value="network">Network outage</option>
+                <option value="equipment">Equipment unavailable</option></select></label>
+              {draft.kind !== 'equipment' && <label>Scope<select value={draft.scope} onChange={e => setDraft({...draft,scope:e.target.value})}>
+                <option value="room">One room</option><option value="building">Entire building</option></select></label>}
+              {(draft.kind === 'equipment' || draft.scope === 'room')
+                ? <label>Room<select required value={draft.room_id} onChange={e => setDraft({...draft,room_id:e.target.value})}>
+                  <option value="">Select room</option>{rooms.map(r => <option key={r.id} value={r.id}>{r.code}</option>)}</select></label>
+                : <label>Building<select required value={draft.building_id} onChange={e => setDraft({...draft,building_id:e.target.value})}>
+                  <option value="">Select building</option>{buildings.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}</select></label>}
+              {draft.kind === 'equipment' && <>
+                <label>Equipment<input required value={draft.equipment_kind}
+                  onChange={e => setDraft({...draft,equipment_kind:e.target.value})}/></label>
+                <label>Quantity lost<input type="number" min={1} required value={draft.quantity_lost}
+                  onChange={e => setDraft({...draft,quantity_lost:Number(e.target.value)})}/></label></>}
+              <label>Starts (Malaysia time)<input required type="datetime-local" value={draft.start_at}
+                onChange={e => setDraft({...draft,start_at:e.target.value})}/></label>
+              <label>Ends (Malaysia time)<input required type="datetime-local" value={draft.end_at}
+                onChange={e => setDraft({...draft,end_at:e.target.value})}/></label>
+            </div>
+            <div className="form-footer"><span>Sessions will not be moved without explicit approval.</span>
+              <button className="button primary" disabled={busy} type="submit">{busy ? 'Saving…' : 'Record and review →'}</button></div>
+          </form>}
+          <div className="content-surface">
+            <div className="section-title"><div><h2>Campus cases</h2><p>Use these representative issues to demonstrate the recovery workflow.</p></div>
+              <span className="small-count">{operationalIncidents.length} cases</span></div>
+            {operationalIncidents.map(item => <div className="incident-row" key={item.id}>
+              <div className="incident-icon">{item.kind === 'closure' ? '×' : item.kind === 'network' ? '≈' : '◈'}</div>
+              <div className="incident-description"><strong>{item.title}</strong>
+                <span>{kindName[item.kind]} · {item.room_id ? roomById(item.room_id)?.code : buildingById(item.building_id)?.name}
+                  {' · '}{formatWindow(item.start_at,item.end_at)}</span></div>
+              <span className="status-chip amber">{item.status}</span>
+              <button className="button outline small" onClick={() => reviewIncident(item.id)}>Review →</button>
+            </div>)}
+          </div>
+          {hiddenTestIncidents.length > 0 && <details className="test-history">
+            <summary>Browser test history ({hiddenTestIncidents.length}) — kept for audit, hidden from the main queue</summary>
+            {hiddenTestIncidents.map(item => <div className="test-item" key={item.id}><span>{item.title}</span>
+              <button className="text-action" onClick={() => reviewIncident(item.id)}>Inspect</button></div>)}
+          </details>}
+        </section>}
+        {tab === 'recovery' && <section className="screen">
+          <div className="page-heading"><div><div className="eyebrow">DECISION SUPPORT</div><h1>Recovery plans</h1>
+            <p>Move rooms, not class times. All hard constraints are checked before a plan can be approved.</p></div></div>
+          <div className="recovery-selector">
+            <div><label htmlFor="recovery-incident">SELECT DISRUPTION</label>
+              <select id="recovery-incident" value={selectedId ?? ''} onChange={e => reviewIncident(Number(e.target.value))}>
+                {incidents.filter(i => !automatedTest(i.title)).concat(incidents.filter(i => automatedTest(i.title)))
+                  .map(i => <option value={i.id} key={i.id}>{i.title}</option>)}
+              </select>
+              {selectedIncident && <p>{kindName[selectedIncident.kind]} · {formatWindow(selectedIncident.start_at, selectedIncident.end_at)}</p>}
+            </div>
+            <button className="button primary" disabled={!isAdmin || busy || !impacts.length}
+              onClick={() => void makePlans()}>{busy ? 'Working…' : 'Find available rooms'}</button>
+          </div>
+          {!isAdmin && <div className="helper-band">
+            {isGuest ? 'Explore available recovery decisions in read-only mode. Sign in as administrator to generate or approve new plans.'
+              : 'Staff accounts are read-only. An administrator must approve schedule changes.'}</div>}
+          <div className="workflow-steps"><span className="step active"><i>1</i> Review affected classes</span>
+            <span className="step-line"/><span className="step"><i>2</i> Compare options</span>
+            <span className="step-line"/><span className="step"><i>3</i> Approve change</span></div>
+          <div className="content-surface impact-surface">
+            <div className="section-title"><div><h2>Classes that need a new room</h2>
+              <p>The engine checks which requirements are actually affected, not merely which rooms are nearby.</p></div>
+              <span className="small-count">{impacts.length} affected</span></div>
+            {impacts.length ? impacts.map(item => <div className="impact-row" key={item.session_id}>
+              <div className="impact-number">{item.code}</div>
+              <div className="impact-main"><strong>{item.title}</strong><small>{item.original_room} · {timeAtCampus(item.start_at)}–{timeAtCampus(item.end_at)}</small></div>
+              <div className="impact-reason">{item.reason}</div>
+            </div>) : <div className="empty-panel">No classes currently need reassignment for this incident. It may already have been recovered.</div>}
+          </div>
+          <div className="section-title results-heading"><div><h2>Room alternatives</h2>
+            <p>Only feasible plans covering every affected class can be approved.</p></div>
+            <span className="small-count">{plans.length} saved plans</span></div>
+          {planMessage && <div className={'result-note ' + (plans.length ? 'success' : '')}>{planMessage}</div>}
+          {plans.length ? <div className="plan-list">
+            {plans.map((plan, index) => <article key={plan.id} className={'plan-surface ' + (index === 0 ? 'preferred' : '')}>
+              <div className="plan-top">
+                <div><small className="eyebrow">{index === 0 ? 'HIGHEST RANKED OPTION' : 'ALTERNATIVE ' + (index + 1)}</small>
+                  <h3>Plan #{plan.id}</h3></div>
+                <div className="plan-top-right"><span className={'status-chip ' + (plan.status === 'approved' ? 'green' : '')}>{plan.status}</span>
+                  <span className="plan-score">{plan.score} <small>preference points</small></span></div>
+              </div>
+              <div className="change-table">
+                <div className="change-header"><span>CLASS</span><span>BEFORE</span><span>AFTER</span></div>
+                {plan.details.explanations.map(change => <div className="change-row" key={change.session_id}>
+                  <strong>{change.code}</strong>
+                  <span>{change.old_room}</span>
+                  <b>{change.new_room}</b>
+                </div>)}
+              </div>
+              <div className="plan-bottom">
+                <details><summary>Why these rooms? View scores and rejections</summary>
+                  {plan.details.explanations.map(change => <div className="explanation" key={change.session_id}>
+                    <strong>{change.code}: {change.new_room} · {change.score.total} points</strong>
+                    <p>Same building: {change.score.same_building} · Capacity fit: {change.score.unused_capacity} · Resource fit: {change.score.excess_equipment}</p>
+                    {(plan.details.rejected[String(change.session_id)] ?? []).map(r => <p key={r.room_id}>
+                      <b>{r.room}</b>: {r.reasons.join('; ')}</p>)}
+                  </div>)}</details>
+                <button className="button primary" disabled={!isAdmin || busy || plan.status !== 'pending'}
+                  onClick={() => void approve(plan.id)}>{plan.status === 'approved' ? 'Approved ✓' :
+                    plan.status === 'pending' ? 'Approve this plan' : 'Plan ' + plan.status}</button>
+              </div>
+            </article>)}
+          </div> : <div className="content-surface empty-results"><p>{impacts.length ? 'No plans stored. Use “Find available rooms” to check the current options.' : 'Choose an active disruption to inspect its impact.'}</p></div>}
+          {!plans.length && planMessage && impacts.length > 0 && <div className="content-surface">
+            <div className="section-title"><h2>Why alternatives were rejected</h2></div>
+            {impacts.map(item => <div className="rejection-group" key={item.session_id}>
+              <strong>{item.code} · {item.title}</strong>
+              {(rejected[String(item.session_id)] ?? []).map(option => <p key={option.room_id}>
+                <b>{option.room}</b>: {option.reasons.join('; ')}</p>)}
+            </div>)}
+          </div>}
+        </section>}
+        {tab === 'rooms' && <section className="screen">
+          <div className="page-heading"><div><div className="eyebrow">FACILITIES</div><h1>Rooms & resources</h1>
+            <p>Review capacity and equipment before moving a class.</p></div></div>
+          <div className="content-surface room-list">
+            <div className="section-title"><h2>Space inventory</h2><span className="small-count">{rooms.length} rooms</span></div>
+            <div className="table-overflow"><table><thead><tr><th>ROOM</th><th>BUILDING</th><th>CAPACITY</th><th>NETWORK</th><th>EQUIPMENT</th></tr></thead>
+              <tbody>{rooms.map(room => <tr key={room.id}>
+                <td><strong>{room.code}</strong></td><td>{buildingById(room.building_id)?.name}</td>
+                <td>{room.capacity} people</td><td>{room.network ? 'Available' : 'Not installed'}</td>
+                <td>{Object.entries(room.equipment).map(([name, number]) => name + ' × ' + number).join(', ') || '—'}</td>
+              </tr>)}</tbody></table></div>
+          </div>
+        </section>}
+        {tab === 'audit' && <section className="screen">
+          <div className="page-heading"><div><div className="eyebrow">ACCOUNTABILITY</div><h1>Activity</h1>
+            <p>Record of disruptions, recovery decisions and schedule approvals.</p></div></div>
+          <div className="content-surface activity-list">
+            <div className="section-title"><h2>Recent actions</h2><span className="small-count">{audit.length} records</span></div>
+            {audit.map(event => <div className="activity-item" key={event.id}>
+              <div className="activity-dot"/>
+              <div><strong>{labelForAudit(event.action)}</strong><p>{formatWindow(event.occurred_at, event.occurred_at)}
+                {event.incident_id ? ' · Incident #' + event.incident_id : ''}
+                {event.proposal_id ? ' · Plan #' + event.proposal_id : ''}</p>
+                <details><summary>View stored details</summary><pre>{JSON.stringify(event.details, null, 2)}</pre></details></div>
+            </div>)}
+            {!audit.length && <div className="empty-panel">No recorded activity yet.</div>}
+          </div>
+        </section>}
+        <footer className="site-footer"><span>Campus Continuity · University scheduling demonstration</span>
+          <span>All times in Malaysia (MYT) · Synthetic data</span></footer>
+      </main>
+    </div>
+    {focus && <div className="modal-backdrop" onClick={() => setFocus(null)}>
+      <div className="session-dialog" role="dialog" aria-modal="true" aria-label="Class details"
+        onClick={event => event.stopPropagation()}>
+        <button className="modal-close" aria-label="Close class details" onClick={() => setFocus(null)}>×</button>
+        <span className="eyebrow">CLASS DETAILS</span><h2>{focus.title}</h2><p className="subdued">{focus.code}</p>
+        <dl className="detail-grid"><div><dt>Scheduled time</dt><dd>{formatWindow(focus.start_at, focus.end_at)}</dd></div>
+          <div><dt>Current room</dt><dd>{focus.room}</dd></div>
+          <div><dt>Students</dt><dd>{focus.attendees}</dd></div>
+          <div><dt>Network required</dt><dd>{focus.needs_network ? 'Yes' : 'No'}</dd></div>
+          {focus.recovered && <div><dt>Previous room</dt><dd>{focus.original_room}</dd></div>}
+        </dl>
+        {focus.recovered && <div className="helper-band">This class was reassigned by an approved recovery plan.</div>}
+        <button className="button secondary" onClick={() => setFocus(null)}>Close</button>
+      </div>
+    </div>}
   </div>;
 }

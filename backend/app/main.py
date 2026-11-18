@@ -4,7 +4,8 @@ from datetime import datetime, timezone
 from typing import Literal
 from fastapi import FastAPI, Depends, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy import select, func, text
 from sqlalchemy.orm import Session as DbSession
 from .db import get_db
@@ -12,7 +13,7 @@ from .models import (
     User, Building, Room, RoomEquipment, Session, SessionRequirement,
     Disruption, Proposal, ProposedAssignment, AuditEvent
 )
-from .security import hasher, create_token, require_admin
+from .security import hasher, create_token, require_admin, require_user
 from .engine import get_impacts, find_plans, SolverLimit
 from .approval import approve
 
@@ -24,6 +25,11 @@ app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173"],
 class LoginPayload(BaseModel):
     username: str
     password: str
+
+class RegistrationPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    username: str = Field(min_length=5, max_length=80, pattern=r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
+    password: str = Field(min_length=12, max_length=128)
 
 class DisruptionInput(BaseModel):
     title: str = Field(min_length=4, max_length=180)
@@ -58,14 +64,37 @@ def health(db: DbSession = Depends(get_db)):
     db.execute(text("SELECT 1"))
     return {"status": "ok", "database": "connected"}
 
+@app.post("/api/auth/register", status_code=201)
+def register(data: RegistrationPayload, db: DbSession = Depends(get_db)):
+    # Self-registration is read-only. Admin accounts are provisioned separately.
+    email = data.username.strip().lower()
+    if db.scalar(select(User.id).where(User.username == email)):
+        raise HTTPException(status_code=409, detail="This email is already registered")
+    account = User(username=email, password_hash=hasher.hash(data.password), role="staff")
+    db.add(account)
+    try:
+        db.commit()
+        db.refresh(account)
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="This email is already registered")
+    return {"access_token": create_token(account), "token_type": "bearer",
+            "username": account.username, "role": account.role}
+
 @app.post("/api/auth/login")
 def login(data: LoginPayload, db: DbSession = Depends(get_db)):
-    user = db.scalar(select(User).where(User.username == data.username))
+    username = data.username.strip()
+    if "@" in username:
+        username = username.lower()
+    user = db.scalar(select(User).where(User.username == username))
     if not user or not hasher.verify(data.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Invalid username or password")
-    if user.role != "admin":
-        raise HTTPException(status_code=403, detail="Administrator required")
-    return {"access_token": create_token(user), "token_type": "bearer", "username": user.username}
+    return {"access_token": create_token(user), "token_type": "bearer",
+            "username": user.username, "role": user.role}
+
+@app.get("/api/auth/me")
+def who_am_i(user: User = Depends(require_user)):
+    return {"username": user.username, "role": user.role}
 
 @app.get("/api/buildings")
 def buildings(db: DbSession = Depends(get_db)):

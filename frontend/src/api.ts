@@ -2,39 +2,58 @@ import type {
   AuditEvent, Building, ClassSession, Impact, Incident, Overview, Proposal, Rejection, Room
 } from './types';
 
-const KEY = 'campus-continuity-demo-token';
-export const getToken = () => localStorage.getItem(KEY);
-export const clearToken = () => localStorage.removeItem(KEY);
+export type Account = { username: string; role: 'admin' | 'staff' };
+export type SessionResult = Account & { access_token: string; token_type: string };
+
+const STORAGE_KEY = 'campus-continuity-demo-token';
+export const getToken = () => localStorage.getItem(STORAGE_KEY);
+export const clearToken = () => localStorage.removeItem(STORAGE_KEY);
 
 export async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const token = getToken();
-  const response = await fetch('/api' + path, {
-    ...options,
-    headers: {
-      ...(options.body ? { 'Content-Type': 'application/json' } : {}),
-      ...(token ? { Authorization: 'Bearer ' + token } : {}),
-      ...(options.headers ?? {})
-    }
-  });
+  let response: Response;
+  try {
+    response = await fetch('/api' + path, {
+      ...options,
+      headers: {
+        ...(options.body ? { 'Content-Type': 'application/json' } : {}),
+        ...(token ? { Authorization: 'Bearer ' + token } : {}),
+        ...(options.headers ?? {})
+      }
+    });
+  } catch {
+    throw new Error('Cannot connect to the campus server. Check that the local services are running.');
+  }
   if (!response.ok) {
-    let message = response.statusText;
+    let message = 'The request could not be completed.';
     try {
       const payload = await response.json() as { detail?: string | { msg: string }[] };
       message = typeof payload.detail === 'string'
-        ? payload.detail : Array.isArray(payload.detail)
-          ? payload.detail.map(x => x.msg).join('; ') : message;
-    } catch { /* non-JSON server response */ }
+        ? payload.detail
+        : Array.isArray(payload.detail) ? payload.detail.map(x => x.msg).join('; ') : message;
+    } catch { /* retain generic error */ }
     throw new Error(response.status + ': ' + message);
   }
   return response.json() as Promise<T>;
 }
+
 export async function login(username: string, password: string) {
-  const result = await request<{ access_token: string; username: string }>('/auth/login', {
+  const result = await request<SessionResult>('/auth/login', {
     method: 'POST', body: JSON.stringify({ username, password })
   });
-  localStorage.setItem(KEY, result.access_token);
-  return result;
+  localStorage.setItem(STORAGE_KEY, result.access_token);
+  return { username: result.username, role: result.role };
 }
+
+export async function register(username: string, password: string) {
+  const result = await request<SessionResult>('/auth/register', {
+    method: 'POST', body: JSON.stringify({ username, password })
+  });
+  localStorage.setItem(STORAGE_KEY, result.access_token);
+  return { username: result.username, role: result.role };
+}
+
+export const getAccount = () => request<Account>('/auth/me');
 export const getOverview = () => request<Overview>('/overview');
 export const getBuildings = () => request<Building[]>('/buildings');
 export const getRooms = () => request<Room[]>('/rooms');

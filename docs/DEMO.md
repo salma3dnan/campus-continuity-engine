@@ -6,12 +6,11 @@ This is a fully synthetic miniature university. The idempotent seed creates **3 
 
 From the project root:
 
-1. Start private PostgreSQL with scripts/start-postgres.ps1.
-2. Start the API with scripts/start-backend.ps1. It runs Alembic and the non-destructive demo seed.
-3. Start React with scripts/start-frontend.ps1.
-4. Open http://127.0.0.1:5173.
-5. Sign in using the administrator username/password stored in the local ignored .env file.
-6. Open the Dashboard and verify the sessions and incidents are loaded from the API.
+1. From the project root, run `powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-campus.ps1`. It starts PostgreSQL, FastAPI and React and opens Chrome.
+2. On the dedicated login page, select **Explore sample timetable** for read-only access, or **Create a staff account** for an email/password-based staff login. Staff accounts cannot approve changes.
+3. For full administrator recovery actions, sign in using `DEMO_ADMIN_USERNAME` and `DEMO_ADMIN_PASSWORD` from the ignored local `.env` file.
+4. Open **Timetable** and inspect the room-by-time schedule. Select a class to view its current room and requirements.
+5. To stop the app without deleting data, use `powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\stop-campus.ps1`.
 
 See README.md for exact PowerShell commands and Python/npm installation prerequisites.
 
@@ -19,12 +18,12 @@ See README.md for exact PowerShell commands and Python/npm installation prerequi
 
 Baseline case: **A · Internet lab room closure**, 9 February 2027, Academic Block room A-LAB1. The **A-OS** laboratory session requires computers and network connectivity. The impact engine reports this class; it does **not** treat nearby unrelated rooms as affected.
 
-1. In Recovery Planning, select scenario A and inspect the impact/reason.
-2. Click **Generate recovery plans**.
+1. In **Recovery plans**, select scenario A and inspect the impact/reason.
+2. Click **Find available rooms**.
 3. Compare replacement room codes, hard-constraint rejections, same-building preference, spare capacity and per-assignment score.
-4. Choose a pending plan and click **Approve & update schedule**.
-5. Open Schedule. The class's room changes, **the class time remains unchanged**, and its original room remains visible.
-6. Check Audit History for a recorded approval with original/new room IDs.
+4. Choose a pending plan and click **Approve this plan**.
+5. Open **Timetable**. The class's room changes, **the class time remains unchanged**, and its original room remains visible.
+6. Check **Activity** for a recorded approval with original/new room IDs.
 
 If scenario A has already been approved during testing, its class is no longer impacted. Use the incident form to close a different un-recovered lab on another date, or run browser test A; normal seeding will **not** erase approvals.
 
@@ -45,7 +44,7 @@ Baseline: **C · Projector unavailable**, 11 February 2027.
 
 - **C-GRAPH** requires one projector in A-LAB1, but the incident reduces available projectors to zero.
 - A class with no projector requirement must not become impacted merely because it is scheduled nearby.
-- Generate alternatives, expand the **Score breakdown & rejected rooms** section, and inspect rejected rooms with missing projectors/computers or other hard constraints.
+- Generate alternatives, expand **Why these rooms? View scores and rejections**, and inspect rejected rooms with missing projectors/computers or other hard constraints.
 
 ## Scenario D — no feasible complete solution
 

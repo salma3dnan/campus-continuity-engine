@@ -18,9 +18,11 @@ Report incident → identify affected classes → evaluate room constraints → 
 - Half-open time intervals: a class ending at 11:00 does not overlap one beginning at 11:00.
 - Deterministic, exact bounded backtracking for simultaneous room assignments; up to three ranked **complete** plans.
 - Hard-constraint rejections with concrete explanations; transparent soft-score breakdown.
-- Admin login with Argon2 password hashes, expiring signed JWT and server-enforced write authorization.
+- Separate sign-in and staff self-registration. Staff accounts are intentionally read-only; only locally provisioned administrators can submit or approve recovery actions.
+- Argon2 password hashes, expiring signed JWT and server-enforced role restrictions.
 - Atomic approvals with stale proposal checks, ordered row locks, PostgreSQL exclusion constraint and audit trail.
-- React pages: Dashboard, Schedule, Resources, Disruptions, Recovery Planning and Audit History.
+- Schedule-first React workspace with a **room-by-time calendar**, date/building filters, class details, Disruptions, Recovery Plans, Rooms & Resources and Activity. Includes a dedicated auth portal and no-login read-only exploration.
+- Browser-test-generated incidents are preserved in audit history but moved out of the primary case queue.
 - Database-backed API responses; no hardcoded incident/plan results in the UI.
 
 ## Stack
@@ -51,30 +53,30 @@ npm.cmd ci
 cd ..
 ~~~
 
-3. Start PostgreSQL:
+3. **Start everything with one command** from the project root:
 
 ~~~powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-postgres.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-campus.ps1
 ~~~
 
-4. In a second terminal, start FastAPI (includes Alembic migration and idempotent seed):
+The script starts or reuses the isolated PostgreSQL 18 cluster, then launches the backend and Vite in persistent independent local processes, checks both HTTP endpoints and opens the login page in Chrome. It requires no Docker or ChatGPT. Run with `-NoBrowser` to skip opening Chrome. Logs and process IDs are stored in the Git-ignored `.local-runtime` folder.
+
+4. **Stop the application safely** (stops only app processes tracked by our startup script, leaves PostgreSQL running):
 
 ~~~powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-backend.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\stop-campus.ps1
 ~~~
 
-5. In a third terminal, start React:
+To stop this project's PostgreSQL cluster too, use `stop-campus.ps1 -IncludeDatabase`. This stops **only** the cluster at `.local-runtime/postgres18`; no files are deleted. Processes launched manually rather than by `start-campus.ps1` are deliberately not terminated.
 
-~~~powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-frontend.ps1
-~~~
+Services continue running after the launcher exits while your Windows session remains active. After a Windows restart, run the startup command again.
 
 Open:
 - Web application: http://127.0.0.1:5173
 - API health: http://127.0.0.1:8000/api/health
 - Swagger/OpenAPI: http://127.0.0.1:8000/docs
 
-For local demo login, use the environment variables **DEMO_ADMIN_USERNAME** and **DEMO_ADMIN_PASSWORD** from your own .env; credentials are not printed in this repository.
+To explore without an account, click **Explore sample timetable**. Select **Create a staff account** to register an email/password (12+ characters); Staff is read-only. For full administrator recovery actions, sign in with **DEMO_ADMIN_USERNAME** and **DEMO_ADMIN_PASSWORD** from your own ignored local `.env`; credentials are never printed in the repository. Public signup **cannot** grant administrator privileges.
 
 The seed command preserves existing records and avoids adding duplicates for the fixed demo buildings/rooms/classes/incidents.
 
@@ -102,7 +104,11 @@ npm.cmd test
 npm.cmd run test:e2e -- --workers=1
 ~~~
 
-Playwright uses the installed Google Chrome browser and writes real screenshots to docs/screenshots/. Browser tests may create extra synthetic audit and disruption records in the main demo database. See docs/TESTING.md for exact executed results and known gaps.
+Playwright uses installed Google Chrome and saves real screenshots to `docs/screenshots/`. Browser tests create synthetic staff users and additional test incidents in the main demo database without resetting the baseline. Test-only incidents are kept in an expandable history section, not the primary queue. See `docs/TESTING.md` for actual run results.
+
+## Interface design references
+
+The original screen layout and interaction flow are **informed by real scheduling products**, including [Skedda's booking calendar](https://www.skedda.com/platform/booking-calendar) (room-grid view and date/space filtering) and [TimeEdit's academic scheduling platform](https://timeedit.com/platform/scheduling/viewer) (academic timetables). All code, branding, structure and visual styling in this repository are independent implementations, not copied proprietary UI assets. The timetable is the default screen rather than a decorative KPI dashboard.
 
 ## Engineering documentation
 

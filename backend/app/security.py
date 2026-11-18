@@ -19,18 +19,23 @@ def create_token(user: User) -> str:
     payload = {"sub": str(user.id), "exp": datetime.now(timezone.utc) + timedelta(hours=8)}
     return jwt.encode(payload, secret, algorithm="HS256")
 
-def require_admin(
+def require_user(
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
     db: Session = Depends(get_db)
 ) -> User:
     if not credentials:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Admin login required")
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Sign in required")
     try:
         payload = jwt.decode(credentials.credentials, os.environ["SECRET_KEY"], algorithms=["HS256"])
         user_id = int(payload["sub"])
     except (jwt.InvalidTokenError, KeyError, ValueError, TypeError):
-        raise HTTPException(status_code=401, detail="Invalid or expired token")
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
     user = db.get(User, user_id)
-    if not user or user.role != "admin":
+    if not user:
+        raise HTTPException(status_code=401, detail="Account no longer exists")
+    return user
+
+def require_admin(user: User = Depends(require_user)) -> User:
+    if user.role != "admin":
         raise HTTPException(status_code=403, detail="Administrator access required")
     return user

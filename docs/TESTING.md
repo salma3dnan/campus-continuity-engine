@@ -2,7 +2,18 @@
 
 **Date:** 18 November 2026 (Asia/Kuala_Lumpur)
 **Environment:** Windows 11 workstation, Python 3.14.7 in project-local virtual environment, Node.js 24.22, PostgreSQL 18.6 in project-private cluster, Chrome via Playwright.
-**Status:** Integrated local MVP verified; Docker Compose packaging remains unverified on the current Docker engine.
+**Status:** Updated schedule-first UI and staff onboarding verified locally on 19 November 2026; Docker Compose packaging remains unverified on this workstation.
+
+## Latest verified revision — 19 November 2026
+
+- **Backend / PostgreSQL:** 30/30 passed, including 8 registration/role-boundary tests in real isolated PostgreSQL.
+- **React / Vitest:** 5/5 passed, covering separated login/registration, guest calendar, read-only staff, invalid login and password confirmation.
+- **Chrome / Playwright:** 6/6 passed **together** (12.7 s), covering login portal, timetable calendar, real account registration + re-login, two-class network recovery comparison, a newly created closure with atomic approval, and a no-solution case.
+- **Production React build:** succeeded (31 transformed modules).
+- **Start/stop:** `start-campus.ps1` launched dedicated PostgreSQL/FastAPI/Vite without Docker and confirmed HTTP readiness; `stop-campus.ps1` stopped app ports 8000/5173 while keeping the private PostgreSQL port 5440; restarting reopened both services and Chrome.
+- **Screenshots:** `docs/screenshots/redesign-*.png` are real Chrome screenshots, not generated artwork.
+
+The original MVP baseline results below remain documented as historical evidence; they are not the latest test totals.
 
 ## Verified application endpoints
 
@@ -23,7 +34,7 @@ Command:
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-backend.ps1
 ~~~
 
-**Final result: 22 passed, 0 failed, 1 deprecation warning (9.16 s).**
+**Original MVP baseline: 22 passed, 0 failed, 1 deprecation warning (9.16 s).** The updated backend suite now reports **30 passed**.
 
 The warning is from the installed FastAPI/Starlette test client indicating upcoming httpx API changes. It does not represent a failed test. Tests use the isolated **continuity_test** database; an explicit guard prevents truncating another database.
 
@@ -52,7 +63,7 @@ npm.cmd run build
 npm.cmd test -- --reporter=dot
 ~~~
 
-**Final result:** production TypeScript + Vite build passed (30 modules transformed), and **3 tests passed, 0 failed**.
+**Original MVP baseline:** production TypeScript + Vite build passed (30 modules transformed), with **3 tests passed**. The redesigned interface now has **5 passing component tests** and a passing production build (31 modules).
 
 Component tests cover rendering live API-shaped summary/schedule data, successful admin login and bearer token storage, and visible authentication failure with no token retained. A race where initial refresh could hide an authentication error was fixed. Browser tests cover the remaining critical UI interactions.
 
@@ -65,7 +76,7 @@ cd frontend
 npm.cmd run test:e2e -- --workers=1 --reporter=line
 ~~~
 
-Playwright uses installed **Google Chrome**, not a simulated browser or fake screenshots. After targeted defect corrections, the complete **five-test Chrome suite passed in one run: 5 passed, 0 failed (8.6 s; total process runtime 10.90 s)**. All five scenarios were verified together:
+Playwright uses installed **Google Chrome**, not a simulated browser or fake screenshots. After targeted defect corrections, the complete **original five-test Chrome suite passed in one run: 5 passed, 0 failed (8.6 s; total process runtime 10.90 s)**. All five scenarios were verified together:
 
 | Browser scenario | Final recorded outcome |
 |---|---|
